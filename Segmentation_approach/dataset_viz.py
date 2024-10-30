@@ -1,8 +1,6 @@
 import os
 import cv2
 import numpy as np
-import matplotlib.pyplot as plt
-from tqdm import tqdm
 
 def visualize_dataset(images_dir, masks_dir, overlay_dir=None, num_samples=10):
     """
@@ -24,7 +22,7 @@ def visualize_dataset(images_dir, masks_dir, overlay_dir=None, num_samples=10):
     if overlay_dir is not None:
         os.makedirs(overlay_dir, exist_ok=True)
 
-    for i in range(num_samples):
+    for i in range(1, num_samples, 10):
         image_path = os.path.join(images_dir, image_files[i])
         mask_path = os.path.join(masks_dir, mask_files[i])
 
@@ -77,4 +75,4 @@ if __name__ == "__main__":
     overlay_dir = './viz_overlays'  # Directory to save overlaid images (optional)
 
     # Visualize 20 samples from the dataset
-    visualize_dataset(images_dir, masks_dir, overlay_dir=overlay_dir, num_samples=20)
+    visualize_dataset(images_dir, masks_dir, overlay_dir=overlay_dir, num_samples=200)
