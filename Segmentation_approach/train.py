@@ -8,6 +8,8 @@ import numpy as np
 import pickle
 from tqdm import tqdm
 from torchvision.transforms.functional import to_pil_image
+from torchvision.models.segmentation import DeepLabV3_ResNet50_Weights
+from torchvision.models.segmentation import DeepLabV3_MobileNet_V3_Large_Weights
 
 def compute_iou(preds, masks):
     """
@@ -78,14 +80,15 @@ def train_model():
     masks_dir = '../dataset_segmentation/masks'
     train_loader, val_loader = get_dataloaders(images_dir, masks_dir, batch_size=8, num_workers=4)
 
-    # Check device
+    # Check device+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
     # Initialize the model
-    from torchvision.models.segmentation import DeepLabV3_ResNet50_Weights
-    weights = DeepLabV3_ResNet50_Weights.DEFAULT
-    model = models.deeplabv3_resnet50(weights=weights)
+    # weights = DeepLabV3_ResNet50_Weights.DEFAULT
+    # model = models.deeplabv3_resnet50(weights=weights)
+    weights = DeepLabV3_MobileNet_V3_Large_Weights.DEFAULT
+    model = models.deeplabv3_mobilenet_v3_large(weights=weights)
     model.classifier[4] = nn.Conv2d(256, 2, kernel_size=(1, 1), stride=(1, 1))
     model = model.to(device)
 
@@ -95,7 +98,7 @@ def train_model():
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
     # Training loop
-    num_epochs = 25
+    num_epochs = 5
     train_losses = []
     val_losses = []
     train_ious = []
