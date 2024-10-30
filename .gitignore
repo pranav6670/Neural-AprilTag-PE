@@ -1,0 +1,35 @@
+# Ignore Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ignore virtual environment
+venv/
+env/
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Ignore macOS hidden files
+.DS_Store
+
+# Ignore Python bytecode and log files
+*.log
+
+# Ignore system-specific config files
+*.swp
+*.swo
+
+# Ignore folders named dataset or dataset_<any_string>
+dataset/
+dataset_*/
+yolov5/
+yolov7/
+
+
+# Ignore commonly used IDE directories
+.vscode/
+.idea/
+
+# Ignore environment files
+.env
