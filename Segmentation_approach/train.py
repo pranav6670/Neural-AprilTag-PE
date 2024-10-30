@@ -6,7 +6,8 @@ from dataloader import get_dataloaders
 import matplotlib.pyplot as plt
 import numpy as np
 import pickle
-
+from tqdm import tqdm
+from torchvision.transforms.functional import to_pil_image
 
 def compute_iou(preds, masks):
     """
@@ -29,6 +30,47 @@ def compute_iou(preds, masks):
             ious.append(intersection / union)
     return np.nanmean(ious)
 
+def visualize_predictions(model, val_loader, device, num_images=5):
+    """
+    Visualizes model predictions on the validation set.
+    """
+    model.eval()
+    images_displayed = 0
+
+    with torch.no_grad():
+        for images, masks in val_loader:
+            images = images.to(device)
+            outputs = model(images)['out']
+            preds = torch.argmax(outputs, dim=1)
+
+            for i in range(images.size(0)):
+                if images_displayed >= num_images:
+                    return
+
+                image = images[i].cpu().numpy().transpose(1, 2, 0)
+                # Denormalize if you applied normalization during transforms
+                # image = image * std + mean
+
+                mask = masks[i].cpu().numpy()
+                pred = preds[i].cpu().numpy()
+
+                # Plot the image, ground truth mask, and predicted mask
+                fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+                axs[0].imshow(image)
+                axs[0].set_title('Image')
+                axs[0].axis('off')
+
+                axs[1].imshow(mask, cmap='gray')
+                axs[1].set_title('Ground Truth Mask')
+                axs[1].axis('off')
+
+                axs[2].imshow(pred, cmap='gray')
+                axs[2].set_title('Predicted Mask')
+                axs[2].axis('off')
+
+                plt.show()
+
+                images_displayed += 1
 
 def train_model():
     # Load DataLoaders
@@ -41,7 +83,6 @@ def train_model():
     print(f"Using device: {device}")
 
     # Initialize the model
-    # Update model initialization to use 'weights' instead of 'pretrained'
     from torchvision.models.segmentation import DeepLabV3_ResNet50_Weights
     weights = DeepLabV3_ResNet50_Weights.DEFAULT
     model = models.deeplabv3_resnet50(weights=weights)
@@ -61,12 +102,14 @@ def train_model():
     val_ious = []
 
     for epoch in range(num_epochs):
+        print(f"\nEpoch [{epoch + 1}/{num_epochs}]")
         # Training Phase
         model.train()
         running_loss = 0.0
         running_iou = 0.0
 
-        for images, masks in train_loader:
+        train_loop = tqdm(enumerate(train_loader), total=len(train_loader), desc='Training', leave=False)
+        for batch_idx, (images, masks) in train_loop:
             images = images.to(device)
             masks = masks.to(device)
 
@@ -84,6 +127,8 @@ def train_model():
             running_loss += loss.item() * images.size(0)
             running_iou += iou * images.size(0)
 
+            train_loop.set_postfix(loss=loss.item(), iou=iou)
+
         epoch_loss = running_loss / len(train_loader.dataset)
         epoch_iou = running_iou / len(train_loader.dataset)
         train_losses.append(epoch_loss)
@@ -94,8 +139,9 @@ def train_model():
         val_running_loss = 0.0
         val_running_iou = 0.0
 
+        val_loop = tqdm(enumerate(val_loader), total=len(val_loader), desc='Validation', leave=False)
         with torch.no_grad():
-            for images, masks in val_loader:
+            for batch_idx, (images, masks) in val_loop:
                 images = images.to(device)
                 masks = masks.to(device)
 
@@ -108,6 +154,8 @@ def train_model():
                 val_running_loss += loss.item() * images.size(0)
                 val_running_iou += iou * images.size(0)
 
+                val_loop.set_postfix(loss=loss.item(), iou=iou)
+
         val_epoch_loss = val_running_loss / len(val_loader.dataset)
         val_epoch_iou = val_running_iou / len(val_loader.dataset)
         val_losses.append(val_epoch_loss)
@@ -115,9 +163,18 @@ def train_model():
 
         scheduler.step()
 
-        print(f"Epoch [{epoch + 1}/{num_epochs}], "
-              f"Train Loss: {epoch_loss:.4f}, Train IoU: {epoch_iou:.4f}, "
+        print(f"Train Loss: {epoch_loss:.4f}, Train IoU: {epoch_iou:.4f}, "
               f"Val Loss: {val_epoch_loss:.4f}, Val IoU: {val_epoch_iou:.4f}")
+
+        # Visualize predictions after each epoch (optional)
+        # Uncomment the following lines to visualize after each epoch
+        # If you prefer to visualize after certain epochs, use an if condition
+        # For example: if (epoch + 1) % 5 == 0:
+
+        # Visualize predictions after certain epochs
+        if (epoch + 1) % 5 == 0 or epoch == 0 or epoch == num_epochs - 1:
+            print("Visualizing predictions on validation set...")
+            visualize_predictions(model, val_loader, device, num_images=5)
 
     # Save the model checkpoint
     torch.save(model.state_dict(), 'deeplabv3_apriltag.pth')
@@ -152,7 +209,6 @@ def train_model():
     plt.legend()
     plt.savefig('iou_curve.png')
     plt.show()
-
 
 if __name__ == '__main__':
     train_model()
