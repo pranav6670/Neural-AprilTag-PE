@@ -180,7 +180,7 @@ if __name__ == "__main__":
     tag_ids = list(range(0, 100))
 
     # Number of images to generate0
-    num_images = 6000
+    num_images = 10000
 
     # Create the dataset
     create_dataset(num_images, tag_ids, output_dir='../dataset_segmentation')

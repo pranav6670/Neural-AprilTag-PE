@@ -26,6 +26,8 @@ dataset_*/
 yolov5/
 yolov7/
 Segmentation_approach/runs
+Segmentation_approach/visualizations
+Segmentation_approach/*.pth
 
 
 # Ignore commonly used IDE directories

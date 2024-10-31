@@ -8,7 +8,7 @@ import numpy as np
 import pickle
 from tqdm import tqdm
 import torchvision.transforms as T
-from torchvision.models.segmentation import DeepLabV3_ResNet50_Weights
+from torchvision.models.segmentation import DeepLabV3_ResNet101_Weights
 from torch.cuda.amp import autocast, GradScaler
 from torch.utils.tensorboard import SummaryWriter
 import albumentations as A
@@ -17,9 +17,13 @@ import random
 import os
 import cv2
 import glob
+import threading
+import webbrowser
+import time
 
 import warnings
 warnings.filterwarnings("ignore")
+
 
 # Set random seed for reproducibility
 def set_seed(seed):
@@ -112,9 +116,25 @@ def compute_iou(preds, masks):
     iou[union == 0] = float('nan')
     return torch.nanmean(iou).item()
 
+def launch_tensorboard(logdir):
+    import tensorboard
+    from tensorboard import program
+
+    tb = program.TensorBoard()
+    tb.configure(argv=[None, '--logdir', logdir, '--port', '6006'])
+    url = tb.launch()
+    print(f"TensorBoard is running at {url}")
+    # Open the TensorBoard page in a web browser
+    # webbrowser.open(url)
+
 def train_model():
     # Initialize TensorBoard writer
-    writer = SummaryWriter()
+    writer = SummaryWriter(log_dir='runs/experiment1')
+
+    # Start TensorBoard in a separate thread
+    tb_thread = threading.Thread(target=launch_tensorboard, args=('runs/',), daemon=True)
+    tb_thread.start()
+    time.sleep(3)  # Wait a few seconds for TensorBoard to launch
 
     # Load DataLoaders
     images_dir = '../dataset_segmentation/images'
@@ -129,8 +149,8 @@ def train_model():
     print(f"Using device: {device}")
 
     # Initialize the model
-    weights = DeepLabV3_ResNet50_Weights.DEFAULT
-    model = models.deeplabv3_resnet50(weights=weights)
+    weights = DeepLabV3_ResNet101_Weights.DEFAULT
+    model = models.deeplabv3_resnet101(weights=weights)
     model.classifier[4] = nn.Conv2d(256, 2, kernel_size=(1, 1), stride=(1, 1))
     model = model.to(device)
 
@@ -145,7 +165,7 @@ def train_model():
 
     # Learning rate scheduler
     from torch.optim.lr_scheduler import OneCycleLR
-    num_epochs = 25
+    num_epochs = 100
     steps_per_epoch = len(train_loader)
     scheduler = OneCycleLR(optimizer, max_lr=0.001, steps_per_epoch=steps_per_epoch, epochs=num_epochs)
 
