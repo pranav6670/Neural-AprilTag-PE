@@ -179,8 +179,8 @@ if __name__ == "__main__":
     # Generate a list of tag IDs (e.g., 0 to 99)
     tag_ids = list(range(0, 100))
 
-    # Number of images to generate
-    num_images = 2000  # Adjust as needed
+    # Number of images to generate0
+    num_images = 6000
 
     # Create the dataset
     create_dataset(num_images, tag_ids, output_dir='../dataset_segmentation')

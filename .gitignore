@@ -25,6 +25,7 @@ dataset/
 dataset_*/
 yolov5/
 yolov7/
+Segmentation_approach/runs
 
 
 # Ignore commonly used IDE directories
