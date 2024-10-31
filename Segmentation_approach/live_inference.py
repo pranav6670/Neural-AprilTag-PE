@@ -19,9 +19,9 @@ def load_model(model_path, device):
     """
     # Load the model architecture
     from torchvision.models.segmentation import DeepLabV3_ResNet50_Weights
-    model = models.deeplabv3_resnet50(weights=None)
+    model = models.deeplabv3_resnet101(weights=None)
     model.classifier[4] = nn.Conv2d(256, 2, kernel_size=(1, 1))
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.load_state_dict(torch.load(model_path, map_location=device), strict=False)
     model = model.to(device)
     model.eval()
     return model
@@ -139,7 +139,7 @@ def draw_pose(image, corners_list, poses, camera_matrix, dist_coeffs):
 
 def main():
     parser = argparse.ArgumentParser(description='AprilTag Segmentation and Pose Estimation')
-    parser.add_argument('--model', type=str, default='deeplabv3_apriltag.pth', help='Path to the trained model')
+    parser.add_argument('--model', type=str, default='best_deeplabv3_apriltag.pth', help='Path to the trained model')
     parser.add_argument('--image', type=str, help='Path to the input image')
     parser.add_argument('--camera', action='store_true', help='Use live camera feed')
     parser.add_argument('--camera_id', type=int, default=0, help='Camera device ID')
@@ -178,6 +178,7 @@ def main():
 
         # Draw results
         result_image = draw_pose(image, corners_list, poses, camera_matrix, dist_coeffs)
+
         cv2.imshow('Result', result_image)
         cv2.waitKey(0)
         cv2.destroyAllWindows()

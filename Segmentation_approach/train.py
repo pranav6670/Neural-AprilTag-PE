@@ -274,16 +274,16 @@ def train_model():
               f"Val Loss: {val_epoch_loss:.4f}, Val IoU: {val_epoch_iou:.4f}")
 
         # Early stopping
-        if val_epoch_iou > best_val_iou:
-            best_val_iou = val_epoch_iou
-            epochs_no_improve = 0
-            torch.save(model.state_dict(), 'best_deeplabv3_apriltag.pth')
-            print("Saved Best Model")
-        else:
-            epochs_no_improve += 1
-            if epochs_no_improve >= early_stopping_patience:
-                print("Early stopping triggered")
-                break
+        # if val_epoch_iou > best_val_iou:
+        #         #     best_val_iou = val_epoch_iou
+        #         #     epochs_no_improve = 0
+        #         #     torch.save(model.state_dict(), 'best_deeplabv3_apriltag.pth')
+        #         #     print("Saved Best Model")
+        #         # else:
+        #         #     epochs_no_improve += 1
+        #         #     if epochs_no_improve >= early_stopping_patience:
+        #         #         print("Early stopping triggered")
+        #         #         break
 
         # Visualize predictions after certain epochs
         if (epoch + 1) % 5 == 0 or epoch == 0 or epoch == num_epochs - 1:
