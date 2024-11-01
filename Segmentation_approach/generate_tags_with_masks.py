@@ -80,7 +80,7 @@ def overlay_apriltag(background_image, tag_image, existing_bboxes, scale_factor=
     tag_image_resized = cv2.resize(tag_image, (new_w_tag, new_h_tag))
 
     # Apply random rotation
-    angle = random.uniform(0, 360)
+    angle = random.uniform(-360, 360)
     tag_image_rotated = rotate_image(tag_image_resized, angle)
 
     # Create mask from the tag image
