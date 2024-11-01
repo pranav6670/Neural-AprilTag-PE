@@ -25,9 +25,10 @@ dataset/
 dataset_*/
 yolov5/
 yolov7/
-Segmentation_approach/runs
-Segmentation_approach/visualizations
-Segmentation_approach/*.pth
+Segmentation_approach_deeplabv3/runs
+Segmentation_approach_deeplabv3/visualizations
+Segmentation_approach_deeplabv3/*.pth
+Segmentation_approach_deeplabv3/checkpoints
 
 
 # Ignore commonly used IDE directories
