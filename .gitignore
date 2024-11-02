@@ -29,7 +29,8 @@ Segmentation_approach_deeplabv3/runs
 Segmentation_approach_deeplabv3/visualizations
 Segmentation_approach_deeplabv3/*.pth
 Segmentation_approach_deeplabv3/checkpoints
-
+Segmentation_approach_UNet/wandb
+Segmentation_approach_UNet/checkpoints
 
 # Ignore commonly used IDE directories
 .vscode/

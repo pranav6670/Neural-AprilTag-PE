@@ -165,35 +165,64 @@ def create_single_image(args):
 
 # Function to validate generated images and masks
 def validate_generated_images(images_dir, masks_dir):
-    corrupted_images = []
-    corrupted_masks = []
+    corrupted_pairs = []
 
     image_files = sorted(os.listdir(images_dir))
     mask_files = sorted(os.listdir(masks_dir))
 
-    for img_file, mask_file in tqdm(zip(image_files, mask_files), total=len(image_files), desc='Validating images'):
-        img_path = os.path.join(images_dir, img_file)
-        mask_path = os.path.join(masks_dir, mask_file)
+    # Ensure the number of images and masks are the same
+    if len(image_files) != len(mask_files):
+        print("Number of images and masks do not match.")
+        # Find the set of indices from filenames
+        image_indices = set(int(f.split('_')[1].split('.')[0]) for f in image_files)
+        mask_indices = set(int(f.split('_')[1].split('.')[0]) for f in mask_files)
+        all_indices = image_indices.union(mask_indices)
+    else:
+        all_indices = [int(f.split('_')[1].split('.')[0]) for f in image_files]
 
-        # Validate image
-        img = cv2.imread(img_path)
-        if img is None or img.size == 0:
-            print(f"Corrupted or empty image file: {img_path}")
-            corrupted_images.append(img_path)
-            os.remove(img_path)  # Optionally remove the corrupted file
+    for idx in tqdm(all_indices, total=len(all_indices), desc='Validating images and masks'):
+        img_filename = f"image_{idx}.jpg"
+        mask_filename = f"mask_{idx}.png"
+        img_path = os.path.join(images_dir, img_filename)
+        mask_path = os.path.join(masks_dir, mask_filename)
 
-        # Validate mask
-        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-        if mask is None or mask.size == 0:
-            print(f"Corrupted or empty mask file: {mask_path}")
-            corrupted_masks.append(mask_path)
-            os.remove(mask_path)  # Optionally remove the corrupted file
+        remove_pair = False
+
+        # Check if image file exists
+        if not os.path.isfile(img_path):
+            print(f"Image file missing: {img_path}")
+            remove_pair = True
+        else:
+            # Validate image
+            img = cv2.imread(img_path)
+            if img is None or img.size == 0:
+                print(f"Corrupted or empty image file: {img_path}")
+                remove_pair = True
+
+        # Check if mask file exists
+        if not os.path.isfile(mask_path):
+            print(f"Mask file missing: {mask_path}")
+            remove_pair = True
+        else:
+            # Validate mask
+            mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+            if mask is None or mask.size == 0:
+                print(f"Corrupted or empty mask file: {mask_path}")
+                remove_pair = True
+
+        if remove_pair:
+            # Remove both image and mask files if they exist
+            if os.path.isfile(img_path):
+                os.remove(img_path)
+            if os.path.isfile(mask_path):
+                os.remove(mask_path)
+            corrupted_pairs.append(idx)
 
     # Report summary
-    if corrupted_images or corrupted_masks:
-        print(f"Found {len(corrupted_images)} corrupted images and {len(corrupted_masks)} corrupted masks.")
+    if corrupted_pairs:
+        print(f"Removed {len(corrupted_pairs)} corrupted or incomplete image-mask pairs.")
     else:
-        print("All generated images and masks are valid.")
+        print("All image-mask pairs are valid.")
 
 # Main function for multiprocessing and validation
 def main():

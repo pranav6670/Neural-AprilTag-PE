@@ -17,29 +17,6 @@ import random
 import os
 import cv2
 import glob
-import warnings
-from datetime import datetime
-from sklearn.metrics import precision_score, recall_score, f1_score
-
-warnings.filterwarnings("ignore")
-
-# Configuration dictionary
-config = {
-    'seed': 42,
-    'batch_size': 8,
-    'num_workers': 16,
-    'num_epochs': 25,
-    'learning_rate': 0.0001,
-    'weight_decay': 1e-4,
-    'early_stopping_patience': 10,
-    'save_interval': 5,  # Save model every 5 epochs
-    'images_dir': '../dataset_segmentation/images',
-    'masks_dir': '../dataset_segmentation/masks',
-    'visualizations_dir': 'visualizations',
-    'model_save_path': 'checkpoints',
-    'log_dir': 'runs',
-}
-
 
 # Set random seed for reproducibility
 def set_seed(seed):
@@ -48,19 +25,9 @@ def set_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
+set_seed(42)
 
-set_seed(config['seed'])
-
-# Launch TensorBoard using the TensorBoard API
-def launch_tensorboard(logdir):
-    import tensorboard
-    from tensorboard import program
-    tb = program.TensorBoard()
-    tb.configure(argv=[None, '--logdir', logdir, '--port', '6006'])
-    url = tb.launch()
-    print(f"TensorBoard is running at {url}")
-
-# Dataset class with augmentations
+# Define the dataset class with advanced data augmentations
 class AprilTagDataset(Dataset):
     def __init__(self, images_dir, masks_dir, transform=None):
         self.image_paths = sorted(glob.glob(os.path.join(images_dir, '*.jpg')))
@@ -83,181 +50,281 @@ class AprilTagDataset(Dataset):
 
         return image, mask.long()
 
-
 def get_dataloaders(images_dir, masks_dir, batch_size=8, num_workers=4):
+    # Define transformations
     train_transform = A.Compose([
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
+        A.RandomRotate90(p=0.5),
+        A.RandomResizedCrop(height=480, width=640, scale=(0.8, 1.0), ratio=(0.9, 1.1), p=0.5),
+        A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.5),
+        A.GaussianBlur(blur_limit=(3, 7), p=0.3),
         A.GaussNoise(var_limit=(10.0, 50.0), p=0.3),
-        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        A.Normalize(mean=(0.485, 0.456, 0.406),
+                    std=(0.229, 0.224, 0.225)),
         ToTensorV2()
     ], additional_targets={'mask': 'mask'})
 
     val_transform = A.Compose([
-        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        A.Normalize(mean=(0.485, 0.456, 0.406),
+                    std=(0.229, 0.224, 0.225)),
         ToTensorV2()
     ])
 
+    # Create datasets
     dataset = AprilTagDataset(images_dir, masks_dir, transform=train_transform)
-    val_size = int(0.3 * len(dataset))
+    val_size = int(0.2 * len(dataset))
     train_size = len(dataset) - val_size
     train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
 
+    # Update transforms for validation dataset
     val_dataset.dataset.transform = val_transform
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
-                              num_workers=num_workers, pin_memory=True, prefetch_factor=2)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
-                            num_workers=num_workers, pin_memory=True, prefetch_factor=2)
+    # Create data loaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
     return train_loader, val_loader
 
-
-# Define Focal Loss
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=0.8, gamma=2):
-        super(FocalLoss, self).__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.ce_loss = nn.CrossEntropyLoss(reduction='none')
+# Define Dice Loss
+class DiceLoss(nn.Module):
+    def __init__(self, smooth=1):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
 
     def forward(self, inputs, targets):
-        logpt = -self.ce_loss(inputs, targets)
-        pt = torch.exp(logpt)
-        focal_loss = -((1 - pt) ** self.gamma) * logpt
-        focal_loss = self.alpha * focal_loss
-        return focal_loss.mean()
-
-
-# Compute metrics
-def compute_metrics(preds, masks):
-    preds_flat = preds.view(-1).cpu().numpy()
-    masks_flat = masks.view(-1).cpu().numpy()
-    precision = precision_score(masks_flat, preds_flat, zero_division=0)
-    recall = recall_score(masks_flat, preds_flat, zero_division=0)
-    f1 = f1_score(masks_flat, preds_flat, zero_division=0)
-    return precision, recall, f1
-
+        inputs = torch.softmax(inputs, dim=1)
+        targets_one_hot = nn.functional.one_hot(targets, num_classes=2).permute(0, 3, 1, 2).float()
+        inputs = inputs[:, 1, :, :]
+        targets = targets_one_hot[:, 1, :, :]
+        intersection = (inputs * targets).sum(dim=(1, 2))
+        total = inputs.sum(dim=(1, 2)) + targets.sum(dim=(1, 2))
+        dice = (2. * intersection + self.smooth) / (total + self.smooth)
+        return 1 - dice.mean()
 
 def compute_iou(preds, masks):
     intersection = ((preds == 1) & (masks == 1)).sum(dim=(1, 2)).float()
     union = ((preds == 1) | (masks == 1)).sum(dim=(1, 2)).float()
-    iou = torch.zeros_like(intersection)
-    valid = union > 0
-    iou[valid] = intersection[valid] / union[valid]
-    return iou.mean().item()
+    iou = intersection / union
+    iou[union == 0] = float('nan')
+    return torch.nanmean(iou).item()
 
+def train_model():
+    # Initialize TensorBoard writer
+    writer = SummaryWriter()
 
-def train_one_epoch(epoch, model, train_loader, criterion, optimizer, device, scaler, writer):
-    model.train()
-    running_loss, running_iou, running_precision, running_recall, running_f1 = 0, 0, 0, 0, 0
-    for images, masks in tqdm(train_loader, desc=f'Training Epoch [{epoch + 1}]', leave=False):
-        images, masks = images.to(device), masks.to(device)
+    # Load DataLoaders
+    images_dir = '../dataset_segmentation/images'
+    masks_dir = '../dataset_segmentation/masks'
+    train_loader, val_loader = get_dataloaders(images_dir, masks_dir, batch_size=8, num_workers=8)
 
-        optimizer.zero_grad()
-        with autocast():
-            outputs = model(images)['out']
-            loss = criterion(outputs, masks)
+    # Fix the validation images for consistent visualization
+    fixed_images, fixed_masks = next(iter(val_loader))
 
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-
-        preds = torch.argmax(outputs, dim=1)
-        iou = compute_iou(preds, masks)
-        precision, recall, f1 = compute_metrics(preds, masks)
-
-        # Accumulate metrics
-        running_loss += loss.item()
-        running_iou += iou
-        running_precision += precision
-        running_recall += recall
-        running_f1 += f1
-
-    return running_loss / len(train_loader), running_iou / len(train_loader), \
-           running_precision / len(train_loader), running_recall / len(train_loader), running_f1 / len(train_loader)
-
-
-def validate_one_epoch(epoch, model, val_loader, criterion, device, writer):
-    model.eval()
-    running_loss, running_iou, running_precision, running_recall, running_f1 = 0, 0, 0, 0, 0
-    with torch.no_grad():
-        for images, masks in tqdm(val_loader, desc=f'Validation Epoch [{epoch + 1}]', leave=False):
-            images, masks = images.to(device), masks.to(device)
-            with autocast():
-                outputs = model(images)['out']
-                loss = criterion(outputs, masks)
-
-            preds = torch.argmax(outputs, dim=1)
-            iou = compute_iou(preds, masks)
-            precision, recall, f1 = compute_metrics(preds, masks)
-
-            running_loss += loss.item()
-            running_iou += iou
-            running_precision += precision
-            running_recall += recall
-            running_f1 += f1
-
-    return running_loss / len(val_loader), running_iou / len(val_loader), \
-           running_precision / len(val_loader), running_recall / len(val_loader), running_f1 / len(val_loader)
-
-
-def train_model(config):
-    os.makedirs(config['model_save_path'], exist_ok=True)
-    os.makedirs(config['visualizations_dir'], exist_ok=True)
-
-    launch_tensorboard(config['log_dir'])
-
-    writer = SummaryWriter(log_dir=config['log_dir'])
-    train_loader, val_loader = get_dataloaders(config['images_dir'], config['masks_dir'],
-                                               batch_size=config['batch_size'], num_workers=config['num_workers'])
-
+    # Check device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = models.deeplabv3_resnet101(weights=DeepLabV3_ResNet101_Weights.DEFAULT)
+    print(f"Using device: {device}")
+
+    # Initialize the model
+    weights = DeepLabV3_ResNet101_Weights.DEFAULT
+    model = models.deeplabv3_resnet101(weights=weights)
     model.classifier[4] = nn.Conv2d(256, 2, kernel_size=(1, 1), stride=(1, 1))
     model = model.to(device)
 
+    # Freeze backbone layers initially
     for param in model.backbone.parameters():
         param.requires_grad = False
 
-    criterion = FocalLoss()
-    optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
-                            lr=config['learning_rate'], weight_decay=config['weight_decay'])
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
-    scaler = GradScaler()
-    early_stopping_patience = config['early_stopping_patience']
-    epochs_no_improve = 0
-    best_val_f1 = 0.0
+    # Define loss functions and optimizer
+    criterion_ce = nn.CrossEntropyLoss()
+    criterion_dice = DiceLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
 
-    for epoch in range(config['num_epochs']):
+    # Learning rate scheduler
+    from torch.optim.lr_scheduler import OneCycleLR
+    num_epochs = 25
+    steps_per_epoch = len(train_loader)
+    scheduler = OneCycleLR(optimizer, max_lr=0.001, steps_per_epoch=steps_per_epoch, epochs=num_epochs)
+
+    # Early stopping parameters
+    early_stopping_patience = 10
+    epochs_no_improve = 0
+    best_val_iou = 0.0  # For saving the best model
+
+    # Initialize GradScaler for mixed precision training
+    scaler = GradScaler()
+
+    # Training loop
+    train_losses = []
+    val_losses = []
+    train_ious = []
+    val_ious = []
+
+    accumulation_steps = 1  # Set to higher than 1 if you want to use gradient accumulation
+
+    for epoch in range(num_epochs):
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"\nEpoch [{epoch + 1}/{num_epochs}], Learning Rate: {current_lr:.6f}")
+
+        # Unfreeze backbone after certain epochs
         if epoch == 5:
             for param in model.backbone.parameters():
                 param.requires_grad = True
-            optimizer.add_param_group({'params': filter(lambda p: p.requires_grad, model.backbone.parameters())})
 
-        train_loss, train_iou, train_prec, train_recall, train_f1 = train_one_epoch(
-            epoch, model, train_loader, criterion, optimizer, device, scaler, writer)
-        val_loss, val_iou, val_prec, val_recall, val_f1 = validate_one_epoch(epoch, model, val_loader, criterion, device, writer)
+        # Training Phase
+        model.train()
+        running_loss = 0.0
+        running_iou = 0.0
 
-        # Early stopping and model saving
-        if val_f1 > best_val_f1:
-            best_val_f1 = val_f1
+        train_loop = tqdm(enumerate(train_loader), total=len(train_loader), desc='Training', leave=False)
+        optimizer.zero_grad()
+        for batch_idx, (images, masks) in train_loop:
+            images = images.to(device, non_blocking=True)
+            masks = masks.to(device, non_blocking=True)
+
+            with autocast():
+                outputs = model(images)['out']
+                loss_ce = criterion_ce(outputs, masks)
+                loss_dice = criterion_dice(outputs, masks)
+                loss = loss_ce + loss_dice
+
+                loss = loss / accumulation_steps  # Normalize loss if using accumulation
+
+            scaler.scale(loss).backward()
+
+            if (batch_idx + 1) % accumulation_steps == 0:
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+                scheduler.step()
+
+            preds = torch.argmax(outputs, dim=1)
+            iou = compute_iou(preds, masks)
+
+            running_loss += loss.item() * images.size(0)
+            running_iou += iou * images.size(0)
+
+            train_loop.set_postfix(loss=loss.item(), iou=iou)
+
+        epoch_loss = running_loss / len(train_loader.dataset)
+        epoch_iou = running_iou / len(train_loader.dataset)
+        train_losses.append(epoch_loss)
+        train_ious.append(epoch_iou)
+
+        # Validation Phase
+        model.eval()
+        val_running_loss = 0.0
+        val_running_iou = 0.0
+
+        val_loop = tqdm(enumerate(val_loader), total=len(val_loader), desc='Validation', leave=False)
+        with torch.no_grad():
+            for batch_idx, (images, masks) in val_loop:
+                images = images.to(device, non_blocking=True)
+                masks = masks.to(device, non_blocking=True)
+
+                with autocast():
+                    outputs = model(images)['out']
+                    loss_ce = criterion_ce(outputs, masks)
+                    loss_dice = criterion_dice(outputs, masks)
+                    loss = loss_ce + loss_dice
+
+                preds = torch.argmax(outputs, dim=1)
+                iou = compute_iou(preds, masks)
+
+                val_running_loss += loss.item() * images.size(0)
+                val_running_iou += iou * images.size(0)
+
+                val_loop.set_postfix(loss=loss.item(), iou=iou)
+
+        val_epoch_loss = val_running_loss / len(val_loader.dataset)
+        val_epoch_iou = val_running_iou / len(val_loader.dataset)
+        val_losses.append(val_epoch_loss)
+        val_ious.append(val_epoch_iou)
+
+        # Log to TensorBoard
+        writer.add_scalar('Loss/train', epoch_loss, epoch)
+        writer.add_scalar('Loss/val', val_epoch_loss, epoch)
+        writer.add_scalar('IoU/train', epoch_iou, epoch)
+        writer.add_scalar('IoU/val', val_epoch_iou, epoch)
+
+        print(f"Train Loss: {epoch_loss:.4f}, Train IoU: {epoch_iou:.4f}, "
+              f"Val Loss: {val_epoch_loss:.4f}, Val IoU: {val_epoch_iou:.4f}")
+
+        # Early stopping
+        if val_epoch_iou > best_val_iou:
+            best_val_iou = val_epoch_iou
             epochs_no_improve = 0
-            torch.save(model.state_dict(), os.path.join(config['model_save_path'], 'best_model.pth'))
+            torch.save(model.state_dict(), 'best_deeplabv3_apriltag.pth')
+            print("Saved Best Model")
         else:
             epochs_no_improve += 1
             if epochs_no_improve >= early_stopping_patience:
-                print("Early stopping due to no improvement in F1 score.")
+                print("Early stopping triggered")
                 break
 
-        scheduler.step(val_loss)
-        writer.add_scalars('Loss', {'train': train_loss, 'val': val_loss}, epoch)
-        writer.add_scalars('IoU', {'train': train_iou, 'val': val_iou}, epoch)
-        writer.add_scalars('Precision', {'train': train_prec, 'val': val_prec}, epoch)
-        writer.add_scalars('Recall', {'train': train_recall, 'val': val_recall}, epoch)
-        writer.add_scalars('F1-Score', {'train': train_f1, 'val': val_f1}, epoch)
-        writer.add_scalar('Learning Rate', optimizer.param_groups[0]['lr'], epoch)
+        # Visualize predictions after certain epochs
+        if (epoch + 1) % 5 == 0 or epoch == 0 or epoch == num_epochs - 1:
+            print("Visualizing predictions on validation set...")
+            visualize_predictions(model, fixed_images, fixed_masks, device, epoch, num_images=5)
 
+    # Save the last model checkpoint
+    torch.save(model.state_dict(), 'last_deeplabv3_apriltag.pth')
+
+    # Save training metrics
+    with open('training_metrics.pkl', 'wb') as f:
+        pickle.dump({
+            'train_losses': train_losses,
+            'val_losses': val_losses,
+            'train_ious': train_ious,
+            'val_ious': val_ious
+        }, f)
+
+    # Close TensorBoard writer
+    writer.close()
+
+def visualize_predictions(model, fixed_images, fixed_masks, device, epoch, num_images=5, save_dir='visualizations'):
+    """
+    Visualizes model predictions on the validation set and saves them.
+    """
+    model.eval()
+    os.makedirs(save_dir, exist_ok=True)
+
+    with torch.no_grad():
+        images = fixed_images.to(device)
+        masks = fixed_masks.to(device)
+        with autocast():
+            outputs = model(images)['out']
+        preds = torch.argmax(outputs, dim=1)
+
+        for i in range(num_images):
+            image = images[i].cpu().numpy().transpose(1, 2, 0)
+            # Denormalize if you applied normalization during transforms
+            mean = np.array([0.485, 0.456, 0.406])
+            std = np.array([0.229, 0.224, 0.225])
+            image = std * image + mean
+            image = np.clip(image, 0, 1)
+
+            mask = masks[i].cpu().numpy()
+            pred = preds[i].cpu().numpy()
+
+            # Plot the image, ground truth mask, and predicted mask
+            fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+            axs[0].imshow(image)
+            axs[0].set_title('Image')
+            axs[0].axis('off')
+
+            axs[1].imshow(mask, cmap='gray')
+            axs[1].set_title('Ground Truth Mask')
+            axs[1].axis('off')
+
+            axs[2].imshow(pred, cmap='gray')
+            axs[2].set_title('Predicted Mask')
+            axs[2].axis('off')
+
+            # Save the figure
+            save_path = os.path.join(save_dir, f'epoch_{epoch+1}_image_{i}.png')
+            plt.savefig(save_path)
+            plt.close(fig)
 
 if __name__ == '__main__':
-    train_model(config)
+    train_model()

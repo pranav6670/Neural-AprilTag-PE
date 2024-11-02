@@ -1,61 +1,110 @@
-import matplotlib.pyplot as plt
-import pickle
+import os
 import torch
-from dataloader import get_dataloaders
-import torchvision.models.segmentation as models
+import glob
+import pickle
 import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
+from torch.utils.data import Dataset, DataLoader
+import torchvision.models.segmentation as models
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+import cv2
+import random
 
-# Load training metrics
-with open('training_metrics.pkl', 'rb') as f:
-    metrics = pickle.load(f)
+plt.style.use('ggplot')
 
-train_losses = metrics['train_losses']
-val_losses = metrics['val_losses']
-train_ious = metrics['train_ious']
-val_ious = metrics['val_ious']
+# Set random seed for reproducibility
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
-num_epochs = len(train_losses)
 
-# Plot Loss Curves
-plt.figure(figsize=(10, 5))
-plt.plot(range(1, num_epochs+1), train_losses, label='Training Loss')
-plt.plot(range(1, num_epochs+1), val_losses, label='Validation Loss')
-plt.xlabel('Epoch')
-plt.ylabel('Loss')
-plt.title('Loss over Epochs')
-plt.legend()
-plt.savefig('loss_curve.png')
-plt.show()
+set_seed(42)
 
-# Plot IoU Curves
-plt.figure(figsize=(10, 5))
-plt.plot(range(1, num_epochs+1), train_ious, label='Training IoU')
-plt.plot(range(1, num_epochs+1), val_ious, label='Validation IoU')
-plt.xlabel('Epoch')
-plt.ylabel('IoU')
-plt.title('IoU over Epochs')
-plt.legend()
-plt.savefig('iou_curve.png')
-plt.show()
 
-# Function to compute IoU (same as in train_model.py)
-def compute_iou(preds, masks):
-    preds = preds.cpu().numpy()
-    masks = masks.cpu().numpy()
-    ious = []
-    for pred, mask in zip(preds, masks):
-        intersection = np.logical_and(pred == 1, mask == 1).sum()
-        union = np.logical_or(pred == 1, mask == 1).sum()
-        if union == 0:
-            ious.append(float('nan'))  # Avoid division by zero
-        else:
-            ious.append(intersection / union)
-    return np.nanmean(ious)
+# Define the dataset class with advanced data augmentations
+class AprilTagDataset(Dataset):
+    def __init__(self, images_dir, masks_dir, transform=None):
+        self.image_paths = sorted(
+            [img_path for img_path in glob.glob(os.path.join(images_dir, '*.jpg')) if os.path.isfile(img_path)])
+        self.mask_paths = sorted(
+            [mask_path for mask_path in glob.glob(os.path.join(masks_dir, '*.png')) if os.path.isfile(mask_path)])
+        self.transform = transform
 
-# Visualize Predictions
-def visualize_predictions(model, val_loader, num_images=5):
+    def __len__(self):
+        return min(len(self.image_paths), len(self.mask_paths))
+
+    def __getitem__(self, idx):
+        img_path, mask_path = self.image_paths[idx], self.mask_paths[idx]
+
+        if not os.path.isfile(img_path) or not os.path.isfile(mask_path):
+            raise FileNotFoundError(f"Missing image or mask file: {img_path} or {mask_path}")
+
+        image = Image.open(img_path).convert('RGB')
+        mask = Image.open(mask_path).convert('L')
+
+        if self.transform:
+            transformed = self.transform(image=np.array(image), mask=np.array(mask))
+            image, mask = transformed['image'], transformed['mask']
+
+        return image, mask
+
+
+# Function to get dataloaders
+def get_dataloaders(images_dir, masks_dir, batch_size=8, num_workers=4):
+    train_transform = A.Compose([
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.5),
+        A.RandomRotate90(p=0.5),
+        A.RandomResizedCrop(height=480, width=640, scale=(0.8, 1.0), ratio=(0.9, 1.1), p=0.5),
+        A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.5),
+        A.GaussianBlur(blur_limit=(3, 7), p=0.3),
+        A.GaussNoise(var_limit=(10.0, 50.0), p=0.3),
+        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        ToTensorV2()
+    ], additional_targets={'mask': 'mask'})
+
+    val_transform = A.Compose([
+        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        ToTensorV2()
+    ])
+
+    dataset = AprilTagDataset(images_dir, masks_dir, transform=train_transform)
+    val_size = int(0.2 * len(dataset))
+    train_size = len(dataset) - val_size
+    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+
+    val_dataset.dataset.transform = val_transform
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers,
+                              pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+
+    return train_loader, val_loader
+
+
+# Overlay function
+def overlay_prediction(image, mask, pred, alpha=0.5):
+    """
+    Overlay prediction on the original image with a given alpha for blending.
+    Returns the overlay image.
+    """
+    mask_overlay = np.zeros_like(image)
+    mask_overlay[pred == 1] = [255, 0, 0]  # Red overlay for predictions
+
+    overlay = cv2.addWeighted(image, 1 - alpha, mask_overlay, alpha, 0)
+    return overlay
+
+
+# Visualize and save Predictions
+def visualize_and_save_predictions(model, val_loader, alpha=0.5, num_images=5, save_dir='predictions'):
+    os.makedirs(save_dir, exist_ok=True)
     model.eval()
     images_displayed = 0
+    device = next(model.parameters()).device
 
     with torch.no_grad():
         for images, masks in val_loader:
@@ -68,11 +117,20 @@ def visualize_predictions(model, val_loader, num_images=5):
                     return
 
                 image = images[i].cpu().numpy().transpose(1, 2, 0)
+                mean = np.array([0.485, 0.456, 0.406])
+                std = np.array([0.229, 0.224, 0.225])
+                image = std * image + mean
+                image = np.clip(image, 0, 1)
+                image = (image * 255).astype(np.uint8)
+
                 mask = masks[i].cpu().numpy()
                 pred = preds[i].cpu().numpy()
 
-                # Plot the image, ground truth mask, and predicted mask
-                fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+                # Create overlay
+                overlay = overlay_prediction(image, mask, pred, alpha=alpha)
+
+                # Plot the image, ground truth mask, predicted mask, and overlay
+                fig, axs = plt.subplots(1, 4, figsize=(20, 5))
                 axs[0].imshow(image)
                 axs[0].set_title('Image')
                 axs[0].axis('off')
@@ -85,23 +143,33 @@ def visualize_predictions(model, val_loader, num_images=5):
                 axs[2].set_title('Predicted Mask')
                 axs[2].axis('off')
 
+                axs[3].imshow(overlay)
+                axs[3].set_title('Overlay')
+                axs[3].axis('off')
+
                 plt.show()
 
+                # Save overlay image
+                overlay_path = os.path.join(save_dir, f'overlay_{images_displayed + 1}.png')
+                Image.fromarray(overlay).save(overlay_path)
+                print(f"Saved overlay image to {overlay_path}")
+
                 images_displayed += 1
+
 
 if __name__ == "__main__":
     # Load the trained model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model = models.deeplabv3_resnet50(pretrained=True)
-    model.classifier[4] = torch.nn.Conv2d(256, 2, kernel_size=(1,1), stride=(1,1))
+    model = models.deeplabv3_resnet101(weights=models.DeepLabV3_ResNet101_Weights.DEFAULT)
+    model.classifier[4] = torch.nn.Conv2d(256, 2, kernel_size=(1, 1), stride=(1, 1))
     model.load_state_dict(torch.load('best_deeplabv3_apriltag.pth', map_location=device))
     model = model.to(device)
 
     # Load validation DataLoader
-    images_dir = '../dataset_segmentation/images'
-    masks_dir = '../dataset_segmentation/masks'
+    images_dir = '../dataset_segmentation/images/'
+    masks_dir = '../dataset_segmentation/masks/'
     _, val_loader = get_dataloaders(images_dir, masks_dir, batch_size=4, num_workers=4)
 
-    # Visualize predictions
-    visualize_predictions(model, val_loader, num_images=5)
+    # Visualize and save predictions with overlay
+    visualize_and_save_predictions(model, val_loader, alpha=0.5, num_images=5)
