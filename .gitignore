@@ -21,6 +21,7 @@ env/
 *.swo
 
 # Ignore folders named dataset or dataset_<any_string>
+backgrounds/
 dataset/
 dataset_*/
 yolov5/
