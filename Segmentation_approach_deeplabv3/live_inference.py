@@ -1,162 +1,91 @@
 import torch
 import torchvision.models.segmentation as models
-import torch.nn as nn
 import cv2
 import numpy as np
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
+from torchvision.transforms import functional as F
 
+
+# Load the trained model for inference
 def load_model(model_path, device):
-    """
-    Loads the trained DeepLabV3 model with ResNet101 backbone.
-    Args:
-        model_path (str): Path to the saved model weights.
-        device (torch.device): Device to load the model onto.
-    Returns:
-        model (nn.Module): The loaded model ready for inference.
-    """
-    # Initialize the model architecture
     model = models.deeplabv3_resnet101(weights=None)
-    # Modify the classifier to match the number of classes (background and AprilTag)
-    model.classifier[4] = nn.Conv2d(256, 2, kernel_size=(1, 1))
-    # Load the trained weights
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.classifier[4] = torch.nn.Conv2d(256, 2, kernel_size=(1, 1))
+
+    # Load the state_dict and filter out aux_classifier keys
+    state_dict = torch.load(model_path, map_location=device)
+    state_dict = {k: v for k, v in state_dict.items() if 'aux_classifier' not in k}
+
+    model.load_state_dict(state_dict, strict=True)
     model = model.to(device)
-    model.eval()  # Set model to evaluation mode
+    model.eval()
     return model
 
-def preprocess_image(image):
-    """
-    Preprocesses the input image for the model.
-    Args:
-        image (numpy.ndarray): The input image in RGB format.
-    Returns:
-        input_tensor (torch.Tensor): The preprocessed image tensor.
-    """
-    # Define the preprocessing pipeline
-    preprocess = A.Compose([
-        A.Resize(height=480, width=640),
-        A.Normalize(mean=(0.485, 0.456, 0.406),
-                    std=(0.229, 0.224, 0.225)),
-        ToTensorV2()
-    ])
-    # Apply preprocessing
-    augmented = preprocess(image=image)
-    input_tensor = augmented['image'].unsqueeze(0)  # Add batch dimension
-    return input_tensor
 
-def run_inference(model, input_tensor, device):
-    """
-    Runs inference on the input tensor.
-    Args:
-        model (nn.Module): The loaded model.
-        input_tensor (torch.Tensor): The preprocessed input tensor.
-        device (torch.device): Device to run inference on.
-    Returns:
-        output (torch.Tensor): The raw output from the model.
-    """
-    input_tensor = input_tensor.to(device)
-    with torch.no_grad():
-        output = model(input_tensor)['out']
-    return output
+# Preprocess image for the model
+def preprocess_image(image, device):
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image = cv2.resize(image, (640, 480))  # Resize only if necessary
+    image = F.to_tensor(image).to(device)  # Normalize directly with ToTensor
+    return image.unsqueeze(0)
 
-def postprocess_output(output, original_image_shape):
-    """
-    Postprocesses the model output to generate a segmentation mask.
-    Args:
-        output (torch.Tensor): The raw output from the model.
-        original_image_shape (tuple): The original shape of the input image.
-    Returns:
-        mask (numpy.ndarray): The segmentation mask as a NumPy array.
-    """
-    # Get the predicted class for each pixel
-    output_predictions = output.argmax(1).squeeze(0).cpu().numpy()
-    # Resize the mask to match the original image size
-    mask = cv2.resize(output_predictions, (original_image_shape[1], original_image_shape[0]), interpolation=cv2.INTER_NEAREST)
-    return mask
 
-def visualize_result(image, mask):
-    """
-    Overlays the segmentation mask on the original image and displays the result.
-    Args:
-        image (numpy.ndarray): The original image in BGR format.
-        mask (numpy.ndarray): The segmentation mask.
-    """
-    # Create a color map for visualization
-    color_map = np.array([[0, 0, 0], [0, 255, 0]])  # Background: black, Foreground (AprilTag): green
-    # Map mask to colors
-    mask_color = color_map[mask]
-    # Overlay mask on the image
-    overlay = cv2.addWeighted(image, 0.7, mask_color.astype(np.uint8), 0.3, 0)
-    # Display the result
-    cv2.imshow('Segmentation Result', overlay)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+# Post-process model output to create binary mask
+def postprocess_output(output, threshold=0.5):
+    # Apply softmax to get confidence scores for each pixel
+    probs = torch.softmax(output, dim=1)
+    mask = probs[0, 1, :, :] > threshold  # Binary mask for class 1 (assuming class 1 is the tag)
+    return mask.cpu().numpy().astype(np.uint8)
 
-def inference_on_image():
-    """
-    Performs inference on a single test image.
-    """
-    # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    # Load model
-    model_path = 'best_deeplabv3_apriltag.pth'  # Adjust the path if necessary
-    model = load_model(model_path, device)
-    # Load image
-    image_path = 'path_to_your_test_image.jpg'  # Replace with your test image path
-    image = cv2.imread(image_path)
-    if image is None:
-        print(f"Failed to load image {image_path}")
-        return
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    original_shape = image_rgb.shape
-    # Preprocess image
-    input_tensor = preprocess_image(image_rgb)
-    # Run inference
-    output = run_inference(model, input_tensor, device)
-    # Postprocess output
-    mask = postprocess_output(output, original_shape)
-    # Visualize result
-    visualize_result(image, mask)
 
-def live_inference():
-    """
-    Performs inference on a live camera feed.
-    """
-    # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    # Load model
-    model_path = 'best_deeplabv3_apriltag.pth'
-    model = load_model(model_path, device)
-    # Start video capture
-    cap = cv2.VideoCapture(0)  # Use 0 for the default camera
+# Overlay mask on image
+def overlay_mask_on_image(image, mask, color=(0, 0, 255)):
+    mask = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
+    color_mask = np.zeros_like(image)
+    color_mask[mask == 1] = color
+    overlayed_image = cv2.addWeighted(image, 0.7, color_mask, 0.3, 0)
+    return overlayed_image
+
+
+# Live camera inference
+def live_camera_inference(model, device):
+    cap = cv2.VideoCapture(0)  # Open webcam (0 is usually the default camera)
     if not cap.isOpened():
-        print("Cannot open camera")
+        print("Error: Could not open webcam.")
         return
+
     while True:
         ret, frame = cap.read()
         if not ret:
-            print("Failed to grab frame")
+            print("Error: Could not read frame.")
             break
-        image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        original_shape = image_rgb.shape
-        # Preprocess frame
-        input_tensor = preprocess_image(image_rgb)
-        # Run inference
-        output = run_inference(model, input_tensor, device)
-        # Postprocess output
-        mask = postprocess_output(output, original_shape)
-        # Visualize result
-        color_map = np.array([[0, 0, 0], [0, 255, 0]])  # Adjust colors as needed
-        mask_color = color_map[mask]
-        overlay = cv2.addWeighted(frame, 0.7, mask_color.astype(np.uint8), 0.3, 0)
-        cv2.imshow('Live Segmentation', overlay)
+
+        # Preprocess the frame for model input
+        input_tensor = preprocess_image(frame, device)
+
+        # Perform inference
+        with torch.no_grad():
+            output = model(input_tensor)['out']
+
+        # Post-process output to obtain the mask
+        mask = postprocess_output(output, 0.95)
+
+        # Overlay mask on the original frame
+        overlayed_frame = overlay_mask_on_image(frame, mask)
+
+        # Display the output
+        cv2.imshow('Live Segmentation', overlayed_frame)
+
+        # Exit loop when 'q' key is pressed
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
-    # Release resources
+
     cap.release()
     cv2.destroyAllWindows()
 
-if __name__ == '__main__':
-    # inference_on_image()
-    live_inference()
+
+if __name__ == "__main__":
+    model_path = "best_deeplabv3_apriltag.pth"  # Replace with your model path
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Load model and start live camera inference
+    model = load_model(model_path, device)
+    live_camera_inference(model, device)
