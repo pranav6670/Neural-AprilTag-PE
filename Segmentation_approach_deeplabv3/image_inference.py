@@ -82,5 +82,5 @@ def main(image_path, model_path):
 # Example usage
 if __name__ == "__main__":
     image_path = "test_img.jpg"  # Replace with your image path
-    model_path = "best_deeplabv3_apriltag.pth"  # Replace with your model path
+    model_path = "models/best_deeplabv3_apriltag.pth"  # Replace with your model path
     main(image_path, model_path)

@@ -254,7 +254,7 @@ def train_model():
         if val_epoch_iou > best_val_iou:
             best_val_iou = val_epoch_iou
             epochs_no_improve = 0
-            torch.save(model.state_dict(), 'best_deeplabv3_apriltag.pth')
+            torch.save(model.state_dict(), 'models/best_deeplabv3_apriltag.pth')
             print("Saved Best Model")
         else:
             epochs_no_improve += 1
@@ -268,7 +268,7 @@ def train_model():
             visualize_predictions(model, fixed_images, fixed_masks, device, epoch, num_images=5)
 
     # Save the last model checkpoint
-    torch.save(model.state_dict(), 'last_deeplabv3_apriltag.pth')
+    torch.save(model.state_dict(), 'models/last_deeplabv3_apriltag.pth')
 
     # Save training metrics
     with open('training_metrics.pkl', 'wb') as f:

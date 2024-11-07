@@ -31,7 +31,10 @@ Segmentation_approach_deeplabv3/*.pth
 Segmentation_approach_deeplabv3/checkpoints
 Segmentation_approach_UNet/wandb
 Segmentation_approach_UNet/checkpoints
-
+Segmentation_approach_deeplabv3/models
+Segmentation_approach_deeplabv3/backgrounds
+House_Room_Dataset
+s
 # Ignore commonly used IDE directories
 .vscode/
 .idea/

@@ -83,7 +83,7 @@ def live_camera_inference(model, device):
 
 
 if __name__ == "__main__":
-    model_path = "best_deeplabv3_apriltag.pth"  # Replace with your model path
+    model_path = "models/best_deeplabv3_apriltag.pth"  # Replace with your model path
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Load model and start live camera inference
