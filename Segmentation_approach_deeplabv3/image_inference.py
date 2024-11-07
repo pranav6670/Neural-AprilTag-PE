@@ -44,6 +44,16 @@ def overlay_mask_on_image(image, mask, color=(0, 0, 255)):
     return overlayed_image
 
 
+def visualize_softmax_output(output):
+    # Get softmax probabilities for the tag class (class 1)
+    probs = torch.softmax(output, dim=1)[0, 1, :, :].cpu().numpy()
+
+    plt.imshow(probs, cmap="hot")
+    plt.colorbar()
+    plt.title("Softmax Output for Tag Class")
+    plt.show()
+
+
 # Visualize segmentation
 def visualize_segmentation(image, mask):
     overlayed_image = overlay_mask_on_image(image, mask)
@@ -64,12 +74,13 @@ def main(image_path, model_path):
     input_tensor = preprocess_image(image, device)
     with torch.no_grad():
         output = model(input_tensor)['out']
+        visualize_softmax_output(output)
     mask = postprocess_output(output)
     visualize_segmentation(image, mask)
 
 
 # Example usage
 if __name__ == "__main__":
-    image_path = "tags.png"  # Replace with your image path
+    image_path = "test_img.jpg"  # Replace with your image path
     model_path = "best_deeplabv3_apriltag.pth"  # Replace with your model path
     main(image_path, model_path)
