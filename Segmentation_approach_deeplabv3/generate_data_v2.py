@@ -11,7 +11,7 @@ background_folder = '../backgrounds/'
 
 # Configuration dictionary
 config = {
-    'num_images': 5000,
+    'num_images': 10000,
     'image_width': 640,
     'image_height': 480,
     'tag_family': 'tag36h11',

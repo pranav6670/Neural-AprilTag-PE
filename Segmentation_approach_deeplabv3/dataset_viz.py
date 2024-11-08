@@ -70,8 +70,8 @@ def visualize_dataset(images_dir, masks_dir, overlay_dir=None, num_samples=10):
 
 # Example usage
 if __name__ == "__main__":
-    images_dir = '../dataset_segmentation/images'
-    masks_dir = '../dataset_segmentation/masks'
+    images_dir = '../dataset_segmentation_warp/images'
+    masks_dir = '../dataset_segmentation_warp/masks'
     overlay_dir = './viz_overlays'  # Directory to save overlaid images (optional)
 
     # Visualize 20 samples from the dataset

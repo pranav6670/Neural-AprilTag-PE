@@ -17,6 +17,9 @@ import random
 import os
 import cv2
 import glob
+import warnings
+
+warnings.filterwarnings("ignore")
 
 # Set random seed for reproducibility
 def set_seed(seed):
@@ -29,26 +32,33 @@ set_seed(42)
 
 # Define the dataset class with advanced data augmentations
 class AprilTagDataset(Dataset):
-    def __init__(self, images_dir, masks_dir, transform=None):
+    def __init__(self, images_dir, masks_dir, transform=None, target_size=(1080, 1920)):
         self.image_paths = sorted(glob.glob(os.path.join(images_dir, '*.jpg')))
         self.mask_paths = sorted(glob.glob(os.path.join(masks_dir, '*.png')))
         self.transform = transform
+        self.target_size = target_size  # Fixed target size for all images and masks
 
     def __len__(self):
         return len(self.image_paths)
 
     def __getitem__(self, idx):
+        # Read and resize the image and mask
         image = cv2.imread(self.image_paths[idx])
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = cv2.resize(image, self.target_size)
+
         mask = cv2.imread(self.mask_paths[idx], cv2.IMREAD_GRAYSCALE)
+        mask = cv2.resize(mask, self.target_size, interpolation=cv2.INTER_NEAREST)  # Avoid smoothing for masks
         mask = (mask > 0).astype(np.uint8)
 
+        # Apply transformations if defined
         if self.transform:
             augmented = self.transform(image=image, mask=mask)
             image = augmented['image']
             mask = augmented['mask']
 
         return image, mask.long()
+
 
 def get_dataloaders(images_dir, masks_dir, batch_size=8, num_workers=4):
     # Define transformations
@@ -114,9 +124,9 @@ def train_model():
     writer = SummaryWriter()
 
     # Load DataLoaders
-    images_dir = '../dataset_segmentation/images'
-    masks_dir = '../dataset_segmentation/masks'
-    train_loader, val_loader = get_dataloaders(images_dir, masks_dir, batch_size=8, num_workers=8)
+    images_dir = '../dataset_segmentation_warp/images'
+    masks_dir = '../dataset_segmentation_warp/masks'
+    train_loader, val_loader = get_dataloaders(images_dir, masks_dir, batch_size=5, num_workers=8)
 
     # Fix the validation images for consistent visualization
     fixed_images, fixed_masks = next(iter(val_loader))
@@ -142,7 +152,7 @@ def train_model():
 
     # Learning rate scheduler
     from torch.optim.lr_scheduler import OneCycleLR
-    num_epochs = 25
+    num_epochs = 50
     steps_per_epoch = len(train_loader)
     scheduler = OneCycleLR(optimizer, max_lr=0.001, steps_per_epoch=steps_per_epoch, epochs=num_epochs)
 
@@ -160,7 +170,7 @@ def train_model():
     train_ious = []
     val_ious = []
 
-    accumulation_steps = 1  # Set to higher than 1 if you want to use gradient accumulation
+    accumulation_steps = 3  # Set to higher than 1 if you want to use gradient accumulation
 
     for epoch in range(num_epochs):
         current_lr = optimizer.param_groups[0]['lr']
@@ -271,7 +281,7 @@ def train_model():
     torch.save(model.state_dict(), 'models/last_deeplabv3_apriltag.pth')
 
     # Save training metrics
-    with open('training_metrics.pkl', 'wb') as f:
+    with open('old_runs/planar_rotated_tags/training_metrics.pkl', 'wb') as f:
         pickle.dump({
             'train_losses': train_losses,
             'val_losses': val_losses,
@@ -327,4 +337,5 @@ def visualize_predictions(model, fixed_images, fixed_masks, device, epoch, num_i
             plt.close(fig)
 
 if __name__ == '__main__':
+    torch.cuda.empty_cache()
     train_model()

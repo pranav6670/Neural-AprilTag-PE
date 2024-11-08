@@ -27,7 +27,7 @@ dataset_*/
 yolov5/
 yolov7/
 Segmentation_approach_deeplabv3/runs
-Segmentation_approach_deeplabv3/visualizations
+Segmentation_approach_deeplabv3/old_runs/planar_rotated_tags/visualizations
 Segmentation_approach_deeplabv3/*.pth
 Segmentation_approach_deeplabv3/checkpoints
 Segmentation_approach_UNet/wandb
@@ -35,6 +35,7 @@ Segmentation_approach_UNet/checkpoints
 Segmentation_approach_deeplabv3/models
 Segmentation_approach_deeplabv3/backgrounds
 SAM_approach/sam_vit_h_4b8939.pth
+Segmentation_approach_deeplabv3/old_runs
 
 # Ignore commonly used IDE directories
 .vscode/
