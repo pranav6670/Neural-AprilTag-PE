@@ -11,7 +11,7 @@ background_folder = '../backgrounds/'
 
 # Configuration dictionary
 config = {
-    'num_images': 10000,
+    'num_images': 20000,
     'image_width': 640,
     'image_height': 480,
     'tag_family': 'tag36h11',
@@ -107,10 +107,10 @@ def overlay_apriltag(background_image, tag_image, existing_bboxes, scale_factor=
     tag_image_resized = cv2.resize(tag_image, (new_w_tag, new_h_tag))
 
     # Warp tag image
-    tag_image_warped = warp_tag_image(tag_image_resized)
+    tag_image_warped = warp_tag_image(tag_image_resized, intensity=0.1)
 
     # Rotate tag image
-    angle = random.uniform(-360, 360)
+    angle = random.uniform(-180, 180)
     tag_image_rotated = rotate_image(tag_image_warped, angle)
     if tag_image_rotated is None or tag_image_rotated.size == 0:
         return None, None, None
@@ -144,7 +144,6 @@ def overlay_apriltag(background_image, tag_image, existing_bboxes, scale_factor=
     return None, None, None
 
 
-# Function to create a single image in the dataset with validation
 # Function to create a single image in the dataset with validation
 def create_single_image(args):
     image_count, tag_ids, config = args

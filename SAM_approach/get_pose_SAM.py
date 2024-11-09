@@ -62,7 +62,7 @@ def main():
     global mode, image_display, points, fx, fy, drawing
 
     # Load the image containing the AprilTag
-    image_path = 'tags6.jpg'
+    image_path = '../dataset_segmentation_warp/images/image_75.jpg'
     image = cv2.imread(image_path)
 
     if image is None:

@@ -1,86 +1,97 @@
 import torch
-import torchvision.models.segmentation as models
 import cv2
 import numpy as np
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+from torchvision.models.segmentation import DeepLabV3_ResNet101_Weights
 import matplotlib.pyplot as plt
-from torchvision.transforms import functional as F
+import torchvision.models.segmentation as models
+import torch.nn as nn
+import random
 
+# Load the trained model
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model = models.deeplabv3_resnet101(weights=DeepLabV3_ResNet101_Weights.DEFAULT)
+model.classifier[4] = nn.Conv2d(256, 2, kernel_size=(1, 1), stride=(1, 1))
+model.load_state_dict(torch.load('models/best_deeplabv3_apriltag.pth', map_location=device))
+model = model.to(device)
+model.eval()
 
-# Load the trained model for inference
-def load_model(model_path, device):
-    model = models.deeplabv3_resnet101(weights=None)
-    model.classifier[4] = torch.nn.Conv2d(256, 2, kernel_size=(1, 1), stride=(1, 1))
+# Define the transformation for the input image
+transform = A.Compose([
+    A.Resize(480, 640),  # Resize to the training dimensions
+    A.Normalize(mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225)),
+    ToTensorV2()
+])
 
-    # Load the state_dict and filter out aux_classifier keys
-    state_dict = torch.load(model_path, map_location=device)
-    state_dict = {k: v for k, v in state_dict.items() if 'aux_classifier' not in k}
-
-    model.load_state_dict(state_dict, strict=True)
-    model = model.to(device)
-    model.eval()
-    return model
-
-
-# Preprocess image for the model
-def preprocess_image(image, device):
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    image = cv2.resize(image, (640, 480))  # Resize only if necessary
-    image = F.to_tensor(image).to(device)  # Normalize directly with ToTensor
-    return image.unsqueeze(0)
-
-
-# Post-process model output to create binary mask
-def postprocess_output(output):
-    output_predictions = output.argmax(1).squeeze().cpu().numpy()
-    return output_predictions
-
-
-# Overlay mask on image
-def overlay_mask_on_image(image, mask, color=(0, 0, 255)):
-    mask = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
-    color_mask = np.zeros_like(image)
-    color_mask[mask == 1] = color
-    overlayed_image = cv2.addWeighted(image, 0.7, color_mask, 0.3, 0)
-    return overlayed_image
-
-
-def visualize_softmax_output(output):
-    # Get softmax probabilities for the tag class (class 1)
-    probs = torch.softmax(output, dim=1)[0, 1, :, :].cpu().numpy()
-
-    plt.imshow(probs, cmap="hot")
-    plt.colorbar()
-    plt.title("Softmax Output for Tag Class")
-    plt.show()
-
-
-# Visualize segmentation
-def visualize_segmentation(image, mask):
-    overlayed_image = overlay_mask_on_image(image, mask)
-    fig, axs = plt.subplots(1, 2, figsize=(12, 6))
-    axs[0].imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-    axs[0].set_title("Original Image")
-    axs[0].axis("off")
-    axs[1].imshow(cv2.cvtColor(overlayed_image, cv2.COLOR_BGR2RGB))
-    axs[1].set_title("Image with Mask Overlay")
-    axs[1].axis("off")
-    plt.show()
-
-
-def main(image_path, model_path):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = load_model(model_path, device)
+def predict_and_overlay(image_path):
+    # Load and preprocess the image
     image = cv2.imread(image_path)
-    input_tensor = preprocess_image(image, device)
+    original_size = (image.shape[1], image.shape[0])  # Store the original dimensions (width, height)
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # Convert to RGB for display
+    transformed = transform(image=image_rgb)
+    input_tensor = transformed['image'].unsqueeze(0).to(device)
+
+    # Perform inference
     with torch.no_grad():
         output = model(input_tensor)['out']
-        visualize_softmax_output(output)
-    mask = postprocess_output(output)
-    visualize_segmentation(image, mask)
+        pred_mask = torch.argmax(output, dim=1).squeeze(0).cpu().numpy()
 
+    # Resize the mask back to the original image size
+    pred_mask_resized = cv2.resize(pred_mask, original_size, interpolation=cv2.INTER_NEAREST)
 
-# Example usage
-if __name__ == "__main__":
-    image_path = "test_img.jpg"  # Replace with your image path
-    model_path = "models/best_deeplabv3_apriltag.pth"  # Replace with your model path
-    main(image_path, model_path)
+    # Create an overlay by blending the original image with the mask
+    overlay = image_rgb.copy()
+    overlay[pred_mask_resized == 1] = [255, 0, 0]  # Color the mask area in red for visibility
+
+    # Blend the overlay with the original image (use alpha blending for transparency)
+    alpha = 0.5  # Adjust transparency
+    blended_image = cv2.addWeighted(image_rgb, 1 - alpha, overlay, alpha, 0)
+
+    return image_rgb, pred_mask_resized, blended_image
+
+# start, end = 0, 2000
+# # Run inference on the test image
+# for i in range(10):
+#     random_number = random.randint(start, end)
+#     test_image_path = f'../dataset_segmentation_warp/images/image_{random_number}.jpg'
+#     image_rgb, pred_mask_resized, blended_image = predict_and_overlay(test_image_path)
+#
+#     # Visualize the results
+#     plt.figure(figsize=(15, 5))
+#     plt.subplot(1, 3, 1)
+#     plt.imshow(image_rgb)
+#     plt.title("Input Image")
+#     plt.axis("off")
+#
+#     plt.subplot(1, 3, 2)
+#     plt.imshow(pred_mask_resized, cmap="gray")
+#     plt.title("Predicted Mask")
+#     plt.axis("off")
+#
+#     plt.subplot(1, 3, 3)
+#     plt.imshow(blended_image)
+#     plt.title("Overlay")
+#     plt.axis("off")
+#     plt.show()
+test_image_path = '../SAM_approach/tags3.jpg'
+image_rgb, pred_mask_resized, blended_image = predict_and_overlay(test_image_path)
+
+# Visualize the results
+plt.figure(figsize=(15, 5))
+plt.subplot(1, 3, 1)
+plt.imshow(image_rgb)
+plt.title("Input Image")
+plt.axis("off")
+
+plt.subplot(1, 3, 2)
+plt.imshow(pred_mask_resized, cmap="gray")
+plt.title("Predicted Mask")
+plt.axis("off")
+
+plt.subplot(1, 3, 3)
+plt.imshow(blended_image)
+plt.title("Overlay")
+plt.axis("off")
+plt.show()
