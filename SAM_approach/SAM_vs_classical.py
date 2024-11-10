@@ -5,6 +5,8 @@ import torch
 from segment_anything import sam_model_registry, SamPredictor
 import matplotlib.pyplot as plt
 import warnings
+from pyapriltags import Detector
+from scipy.spatial.transform import Rotation as R
 
 warnings.filterwarnings("ignore")
 
@@ -61,8 +63,8 @@ def select_prompt(event, x, y, flags, param):
 def main():
     global mode, image_display, points, fx, fy, drawing
 
-    # Load the image containing the ArUco marker
-    image_path = '../Segmentation_approach_deeplabv3/tag.png'
+    # Load the image containing the AprilTag
+    image_path = 'tags4.jpg'
     image = cv2.imread(image_path)
 
     if image is None:
@@ -92,9 +94,9 @@ def main():
 
     print("Instructions:")
     if mode == 'box':
-        print("- Draw a bounding box around the ArUco marker by clicking and dragging.")
+        print("- Draw a bounding box around the AprilTag by clicking and dragging.")
     elif mode == 'point':
-        print("- Click on the image to select points inside the ArUco marker.")
+        print("- Click on the image to select points inside the AprilTag.")
         print("- Press 'q' when done selecting points.")
 
     cv2.imshow('Select Prompt', image_display)
@@ -107,6 +109,10 @@ def main():
             break
 
     cv2.destroyAllWindows()
+
+    # ================================
+    # Segment Anything Model (SAM) Method
+    # ================================
 
     # Initialize SAM
     sam_checkpoint = "sam_vit_h_4b8939.pth"
@@ -168,7 +174,7 @@ def main():
         print("Error: No contours found in the mask.")
         return
 
-    # Assume the largest contour corresponds to the marker
+    # Assume the largest contour corresponds to the tag
     contour = max(contours, key=cv2.contourArea)
 
     # Approximate the contour to a polygon
@@ -200,19 +206,20 @@ def main():
             return
 
     # Order the corners consistently
-    image_points = order_corners(corners)
+    image_points_sam = order_corners(corners)
 
     # Display the image with the detected corners
-    for point in image_points:
-        cv2.circle(image, tuple(point.astype(int)), 5, (0, 0, 255), -1)
+    image_sam_corners = image.copy()
+    for point in image_points_sam:
+        cv2.circle(image_sam_corners, tuple(point.astype(int)), 5, (0, 0, 255), -1)
 
-    cv2.imshow('Detected Corners', image)
+    cv2.imshow('Detected Corners (SAM)', image_sam_corners)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
-    # Define the real-world coordinates of the marker corners relative to the center
-    marker_size = 0.1  # For example, 0.1 meters
-    half_size = marker_size / 2.0
+    # Define the real-world coordinates of the tag corners relative to the center
+    tag_size = 0.1  # For example, 0.1 meters
+    half_size = tag_size / 2.0
 
     object_points = np.array([
         [-half_size, -half_size, 0],
@@ -234,33 +241,27 @@ def main():
 
     dist_coeffs = np.zeros((4, 1))  # Assuming no lens distortion
 
-    # Solve PnP using SAM segmentation
+    # Solve PnP for SAM method
     success_sam, rotation_vector_sam, translation_vector_sam = cv2.solvePnP(
         object_points,
-        image_points.astype(np.float32),
+        image_points_sam.astype(np.float32),
         camera_matrix,
         dist_coeffs,
         flags=cv2.SOLVEPNP_ITERATIVE
     )
 
     if not success_sam:
-        print("Error: Could not solve PnP problem with SAM segmentation.")
+        print("Error: Could not solve PnP problem for SAM method.")
         return
 
     # Convert rotation vector to rotation matrix
     rotation_matrix_sam, _ = cv2.Rodrigues(rotation_vector_sam)
 
-    # Output the 6D pose from SAM segmentation
-    print("SAM + PnP Rotation Matrix:")
-    print(rotation_matrix_sam)
-    print("\nSAM + PnP Translation Vector:")
-    print(translation_vector_sam)
-
-    # Pose visualization for SAM segmentation
+    # Pose visualization shifted to the center (SAM method)
     # Define the axes to be drawn from the center
-    axis_length = marker_size * 0.5  # Adjust the axis length as needed
+    axis_length = tag_size * 0.5  # Adjust the axis length as needed
     axis_3D_points = np.float32([
-        [0, 0, 0],                   # Origin at center of marker
+        [0, 0, 0],                   # Origin at center of tag
         [axis_length, 0, 0],         # X-axis
         [0, axis_length, 0],         # Y-axis
         [0, 0, -axis_length],        # Z-axis (negative because OpenCV coordinate system)
@@ -278,97 +279,120 @@ def main():
     # Convert points to integer coordinates
     image_points_axes_sam = image_points_axes_sam.reshape(-1, 2).astype(int)
 
-    # Draw the coordinate axes on the image
+    # Draw the coordinate axes on the image (SAM method)
     image_pose_sam = image.copy()
-    corner = tuple(image_points_axes_sam[0])  # Origin point at center of marker
-    cv2.line(image_pose_sam, corner, tuple(image_points_axes_sam[1]), (0, 0, 255), 3)  # X-axis in red
-    cv2.line(image_pose_sam, corner, tuple(image_points_axes_sam[2]), (0, 255, 0), 3)  # Y-axis in green
-    cv2.line(image_pose_sam, corner, tuple(image_points_axes_sam[3]), (255, 0, 0), 3)  # Z-axis in blue
+    corner_sam = tuple(image_points_axes_sam[0])  # Origin point at center of tag
+    cv2.line(image_pose_sam, corner_sam, tuple(image_points_axes_sam[1]), (0, 0, 255), 3)  # X-axis in red
+    cv2.line(image_pose_sam, corner_sam, tuple(image_points_axes_sam[2]), (0, 255, 0), 3)  # Y-axis in green
+    cv2.line(image_pose_sam, corner_sam, tuple(image_points_axes_sam[3]), (255, 0, 0), 3)  # Z-axis in blue
 
-    # Show the image with pose visualization for SAM
-    cv2.imshow('SAM Pose Visualization Centered', image_pose_sam)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    # ================================
+    # pyAprilTags Method
+    # ================================
 
-    # -------------------- ArUco Detection and Pose Estimation --------------------
+    # Convert image to grayscale for pyAprilTags
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    # Convert image to grayscale
-    gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # Initialize the AprilTag detector
+    detector = Detector(families='tag36h11')
 
-    # Load the dictionary that was used to generate the markers
-    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+    # Camera parameters for pyAprilTags
+    fx, fy = fx_cam, fy_cam
+    cx, cy = cx, cy
+    camera_params = (fx, fy, cx, cy)
 
-    # Initialize the detector parameters using default values
-    parameters = cv2.aruco.DetectorParameters()
-    detector = cv2.aruco.ArucoDetector(dictionary, parameters)
+    # Known reference tag size
+    tag_size_reference = tag_size  # Use the same tag size as in SAM method
 
-    # Detect the markers in the image using the new ArucoDetector API
-    corners_list, ids, rejected_candidates = detector.detectMarkers(gray_image)
+    # Detect tags in the image
+    results = detector.detect(gray, estimate_tag_pose=True, camera_params=camera_params, tag_size=tag_size_reference)
 
-    if ids is None:
-        print("No ArUco markers detected.")
+    if not results:
+        print("No tags detected by pyAprilTags.")
         return
 
-    # Assume the first detected marker is the one we want
-    marker_corners = corners_list[0].reshape(4, 2)
-    marker_id = ids[0][0]
+    # Assume the first detected tag
+    result = results[0]
 
-    # Solve PnP using ArUco detection
-    success_tag, rotation_vector_tag, translation_vector_tag = cv2.solvePnP(
-        object_points,
-        marker_corners.astype(np.float32),
-        camera_matrix,
-        dist_coeffs,
-        flags=cv2.SOLVEPNP_ITERATIVE
-    )
+    # Get pose estimation from pyAprilTags
+    t_vector_apriltag = result.pose_t  # Translation vector
+    r_matrix_apriltag = result.pose_R  # Rotation matrix
 
-    if not success_tag:
-        print("Error: Could not solve PnP problem with ArUco detection.")
-        return
+    # Convert rotation matrix to rotation vector
+    rotation_vector_apriltag, _ = cv2.Rodrigues(r_matrix_apriltag)
 
-    # Convert rotation vector to rotation matrix
-    rotation_matrix_tag, _ = cv2.Rodrigues(rotation_vector_tag)
+    # Pose visualization for pyAprilTags method
+    # Define points for the axes in 3D space
+    axis_length = tag_size_reference * 0.5  # Length of the overlayed axis
+    axis_3D_points = np.float32([
+        [0, 0, 0],                   # Origin at center of tag
+        [axis_length, 0, 0],         # X-axis
+        [0, axis_length, 0],         # Y-axis
+        [0, 0, -axis_length],        # Z-axis (negative because OpenCV coordinate system)
+    ])
 
-    # Output the 6D pose from ArUco detection
-    print("ArUco Rotation Matrix:")
-    print(rotation_matrix_tag)
-    print("\nArUco Translation Vector:")
-    print(translation_vector_tag)
-
-    # Pose visualization for ArUco detection
-    image_points_axes_tag, _ = cv2.projectPoints(
+    # Project 3D points to image plane
+    image_points_axes_apriltag, _ = cv2.projectPoints(
         axis_3D_points,
-        rotation_vector_tag,
-        translation_vector_tag,
+        rotation_vector_apriltag,
+        t_vector_apriltag,
         camera_matrix,
         dist_coeffs
     )
 
     # Convert points to integer coordinates
-    image_points_axes_tag = image_points_axes_tag.reshape(-1, 2).astype(int)
+    image_points_axes_apriltag = image_points_axes_apriltag.reshape(-1, 2).astype(int)
 
-    # Draw the coordinate axes on the image
-    image_pose_tag = image.copy()
-    corner = tuple(image_points_axes_tag[0])  # Origin point at center of marker
-    cv2.line(image_pose_tag, corner, tuple(image_points_axes_tag[1]), (0, 0, 255), 3)  # X-axis in red
-    cv2.line(image_pose_tag, corner, tuple(image_points_axes_tag[2]), (0, 255, 0), 3)  # Y-axis in green
-    cv2.line(image_pose_tag, corner, tuple(image_points_axes_tag[3]), (255, 0, 0), 3)  # Z-axis in blue
+    # Draw the coordinate axes on the image (pyAprilTags method)
+    image_pose_apriltag = image.copy()
+    corner_apriltag = tuple(image_points_axes_apriltag[0])  # Origin point at center of tag
+    cv2.line(image_pose_apriltag, corner_apriltag, tuple(image_points_axes_apriltag[1]), (0, 0, 255), 3)  # X-axis in red
+    cv2.line(image_pose_apriltag, corner_apriltag, tuple(image_points_axes_apriltag[2]), (0, 255, 0), 3)  # Y-axis in green
+    cv2.line(image_pose_apriltag, corner_apriltag, tuple(image_points_axes_apriltag[3]), (255, 0, 0), 3)  # Z-axis in blue
 
-    # Show the image with pose visualization for ArUco
-    cv2.imshow('ArUco Pose Visualization Centered', image_pose_tag)
+    # Draw the center of the tag
+    (cX, cY) = (int(result.center[0]), int(result.center[1]))
+    cv2.circle(image_pose_apriltag, (cX, cY), 5, (0, 0, 255), -1)
+
+    # ================================
+    # Comparison of Both Methods
+    # ================================
+
+    # Display the images side by side
+    combined_image = np.hstack((image_pose_sam, image_pose_apriltag))
+    cv2.imshow('Pose Estimation Comparison (Left: SAM, Right: pyAprilTags)', combined_image)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
-    # -------------------- Comparison --------------------
+    # Print the rotation matrices and translation vectors
+    print("=== SAM Method Pose ===")
+    print("Rotation Matrix (SAM):")
+    print(rotation_matrix_sam)
+    print("Translation Vector (SAM):")
+    print(translation_vector_sam.T)
 
-    # Compare rotation matrices and translation vectors
-    rotation_diff = rotation_matrix_sam - rotation_matrix_tag
-    translation_diff = translation_vector_sam - translation_vector_tag
+    print("\n=== pyAprilTags Method Pose ===")
+    print("Rotation Matrix (pyAprilTags):")
+    print(r_matrix_apriltag)
+    print("Translation Vector (pyAprilTags):")
+    print(t_vector_apriltag.T)
 
-    print("\nRotation Matrix Difference:")
+    # Calculate differences between poses
+    rotation_diff = rotation_matrix_sam - r_matrix_apriltag
+    translation_diff = translation_vector_sam - t_vector_apriltag
+
+    print("\n=== Difference in Poses ===")
+    print("Rotation Matrix Difference:")
     print(rotation_diff)
-    print("\nTranslation Vector Difference:")
-    print(translation_diff)
+    print("Translation Vector Difference:")
+    print(translation_diff.T)
+
+    # Optionally, compute the norm of differences
+    rotation_diff_norm = np.linalg.norm(rotation_diff)
+    translation_diff_norm = np.linalg.norm(translation_diff)
+
+    print("\nNorm of Rotation Matrix Difference:", rotation_diff_norm)
+    print("Norm of Translation Vector Difference:", translation_diff_norm)
 
 if __name__ == "__main__":
     main()
