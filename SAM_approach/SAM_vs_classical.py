@@ -64,7 +64,7 @@ def main():
     global mode, image_display, points, fx, fy, drawing
 
     # Load the image containing the AprilTag
-    image_path = 'tags4.jpg'
+    image_path = 'resized-images/IMG_8686.jpg'
     image = cv2.imread(image_path)
 
     if image is None:

@@ -82,7 +82,7 @@ def main():
     process = psutil.Process()
     tracemalloc.start()
 
-    image_path = 'tags4.jpg'
+    image_path = 'resized-images/IMG_8686.jpg'
     image = cv2.imread(image_path)
     if image is None:
         print("Error: Could not read the image.")
@@ -201,82 +201,92 @@ def main():
     mem_usage_apriltag = mem_after_apriltag - mem_before_apriltag
 
     # ================= Visualization Functions =================
+    def add_labels(bars):
+        for bar in bars:
+            yval = bar.get_height()
+            plt.text(bar.get_x() + bar.get_width()/2, yval, round(yval, 2), ha="center", va="bottom")
+
     def plot_execution_time(execution_times):
         plt.figure(figsize=(10, 6))
-        plt.bar(execution_times.keys(), execution_times.values(), color=['blue', 'orange'])
+        bars = plt.bar(execution_times.keys(), execution_times.values(), color=['blue', 'orange'])
         plt.title('Execution Time Comparison')
         plt.ylabel('Time (seconds)')
+        add_labels(bars)
         plt.show()
 
     def plot_memory_usage(memory_usage):
         plt.figure(figsize=(10, 6))
-        plt.bar(memory_usage.keys(), memory_usage.values(), color=['blue', 'orange'])
+        bars = plt.bar(memory_usage.keys(), memory_usage.values(), color=['blue', 'orange'])
         plt.title('Memory Usage Comparison')
         plt.ylabel('Memory Usage (MB)')
+        add_labels(bars)
         plt.show()
 
     def plot_cpu_gpu_usage(avg_cpu_usage, avg_gpu_usage, avg_gpu_mem_usage):
         plt.figure(figsize=(10, 6))
-        plt.bar(avg_cpu_usage.keys(), avg_cpu_usage.values(), color=['blue', 'orange'])
+        bars = plt.bar(avg_cpu_usage.keys(), avg_cpu_usage.values(), color=['blue', 'orange'])
         plt.title('Average CPU Usage Comparison')
         plt.ylabel('CPU Usage (%)')
+        add_labels(bars)
         plt.show()
 
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
 
         # GPU Memory Usage
-        ax1.bar(avg_gpu_mem_usage.keys(), avg_gpu_mem_usage.values(), color=['blue', 'orange'])
+        bars1 = ax1.bar(avg_gpu_mem_usage.keys(), avg_gpu_mem_usage.values(), color=['blue', 'orange'])
         ax1.set_title('Average GPU Memory Usage Comparison')
         ax1.set_ylabel('GPU Memory Usage (MB)')
+        for bar in bars1:
+            yval = bar.get_height()
+            ax1.text(bar.get_x() + bar.get_width()/2, yval, round(yval, 2), ha="center", va="bottom")
 
         # GPU Utilization
-        ax2.bar(avg_gpu_usage.keys(), avg_gpu_usage.values(), color=['blue', 'orange'])
+        bars2 = ax2.bar(avg_gpu_usage.keys(), avg_gpu_usage.values(), color=['blue', 'orange'])
         ax2.set_title('Average GPU Utilization Comparison')
         ax2.set_ylabel('GPU Utilization (%)')
+        for bar in bars2:
+            yval = bar.get_height()
+            ax2.text(bar.get_x() + bar.get_width()/2, yval, round(yval, 2), ha="center", va="bottom")
 
         plt.show()
 
     def plot_step_times(step_times_sam, step_times_apriltag):
         # Step-Wise Time Breakdown for SAM
         plt.figure(figsize=(12, 6))
-        plt.bar(step_times_sam.keys(), step_times_sam.values(), color='blue')
+        bars = plt.bar(step_times_sam.keys(), step_times_sam.values(), color='blue')
         plt.title('Step-Wise Time Breakdown for SAM')
         plt.xlabel('Steps')
         plt.ylabel('Time (seconds)')
         plt.xticks(rotation=45, ha="right")
+        add_labels(bars)
         plt.show()
 
         # Step-Wise Time Breakdown for pyAprilTags
         plt.figure(figsize=(12, 6))
-        plt.bar(step_times_apriltag.keys(), step_times_apriltag.values(), color='orange')
+        bars = plt.bar(step_times_apriltag.keys(), step_times_apriltag.values(), color='orange')
         plt.title('Step-Wise Time Breakdown for pyAprilTags')
         plt.xlabel('Steps')
         plt.ylabel('Time (seconds)')
         plt.xticks(rotation=45, ha="right")
+        add_labels(bars)
         plt.show()
 
     def plot_pose_diff_norms(pose_diff_norms):
         plt.figure(figsize=(10, 6))
-        plt.bar(pose_diff_norms.keys(), pose_diff_norms.values(), color=['green', 'red'])
+        bars = plt.bar(pose_diff_norms.keys(), pose_diff_norms.values(), color=['green', 'red'])
         plt.title('Pose Difference Norms')
         plt.ylabel('Norm of Difference')
+        add_labels(bars)
         plt.show()
 
-        # ================= Call Visualization Functions =================
+    # ================= Call Visualization Functions =================
+    avg_cpu_usage_sam = sum(resource_stats_sam['cpu_usage']) / len(resource_stats_sam['cpu_usage']) if resource_stats_sam['cpu_usage'] else 0
+    avg_gpu_mem_usage_sam = sum(resource_stats_sam['gpu_mem_usage']) / len(resource_stats_sam['gpu_mem_usage']) if resource_stats_sam['gpu_mem_usage'] else 0
+    avg_gpu_util_sam = sum(resource_stats_sam['gpu_utilization']) / len(resource_stats_sam['gpu_utilization']) if resource_stats_sam['gpu_utilization'] else 0
 
-    avg_cpu_usage_sam = sum(resource_stats_sam['cpu_usage']) / len(resource_stats_sam['cpu_usage']) if \
-    resource_stats_sam['cpu_usage'] else 0
-    avg_gpu_mem_usage_sam = sum(resource_stats_sam['gpu_mem_usage']) / len(resource_stats_sam['gpu_mem_usage']) if \
-    resource_stats_sam['gpu_mem_usage'] else 0
-    avg_gpu_util_sam = sum(resource_stats_sam['gpu_utilization']) / len(resource_stats_sam['gpu_utilization']) if \
-    resource_stats_sam['gpu_utilization'] else 0
-
-    avg_cpu_usage_apriltag = sum(resource_stats_apriltag['cpu_usage']) / len(resource_stats_apriltag['cpu_usage']) if \
-    resource_stats_apriltag['cpu_usage'] else 0
-    avg_gpu_mem_usage_apriltag = sum(resource_stats_apriltag['gpu_mem_usage']) / len(
-        resource_stats_apriltag['gpu_mem_usage']) if resource_stats_apriltag['gpu_mem_usage'] else 0
-    avg_gpu_util_apriltag = sum(resource_stats_apriltag['gpu_utilization']) / len(
-        resource_stats_apriltag['gpu_utilization']) if resource_stats_apriltag['gpu_utilization'] else 0
+    avg_cpu_usage_apriltag = sum(resource_stats_apriltag['cpu_usage']) / len(resource_stats_apriltag['cpu_usage']) if resource_stats_apriltag['cpu_usage'] else 0
+    avg_gpu_mem_usage_apriltag = sum(resource_stats_apriltag['gpu_mem_usage']) / len(resource_stats_apriltag['gpu_mem_usage']) if resource_stats_apriltag['gpu_mem_usage'] else 0
+    avg_gpu_util_apriltag = sum(resource_stats_apriltag['gpu_utilization']) / len(resource_stats_apriltag['gpu_utilization']) if resource_stats_apriltag['gpu_utilization'] else 0
 
     plot_execution_time({'SAM': time_sam, 'pyAprilTags': time_apriltag})
     plot_memory_usage({'SAM': mem_usage_sam, 'pyAprilTags': mem_usage_apriltag})
@@ -295,7 +305,6 @@ def main():
     rotation_diff_norm = 0.0212  # Example placeholder value
     translation_diff_norm = 0.0214  # Example placeholder value
     plot_pose_diff_norms({'Rotation': rotation_diff_norm, 'Translation': translation_diff_norm})
-
 
 if __name__ == "__main__":
     main()
