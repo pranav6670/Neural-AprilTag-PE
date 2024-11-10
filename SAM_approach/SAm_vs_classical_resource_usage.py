@@ -5,15 +5,13 @@ from segment_anything import sam_model_registry, SamPredictor
 import matplotlib.pyplot as plt
 import warnings
 from pyapriltags import Detector
-from scipy.spatial.transform import Rotation as R
 import time
 import psutil
 import tracemalloc
 import threading
 import pynvml
-import sys
 
-plt.style.use('ggplot')
+plt.style.use('seaborn-v0_8-darkgrid')
 warnings.filterwarnings("ignore")
 
 # Function to order the corners consistently
@@ -34,15 +32,19 @@ fx, fy = -1, -1
 mode = 'box'
 points = []
 user_interactions = 0
+user_interaction_start = 0
+user_interaction_end = 0
 
 def select_prompt(event, x, y, flags, param):
-    global ix, iy, fx, fy, drawing, mode, image_display, points, user_interactions
+    global ix, iy, fx, fy, drawing, mode, image_display, points, user_interactions, user_interaction_start, user_interaction_end
     if mode == 'box':
         if event == cv2.EVENT_LBUTTONDOWN:
             drawing = True
             ix, iy = x, y
             fx, fy = x, y
             user_interactions += 1
+            if user_interactions == 1:
+                user_interaction_start = time.time()
         elif event == cv2.EVENT_MOUSEMOVE:
             if drawing:
                 fx, fy = x, y
@@ -54,13 +56,17 @@ def select_prompt(event, x, y, flags, param):
             fx, fy = x, y
             cv2.rectangle(image_display, (ix, iy), (fx, fy), (0, 255, 0), 2)
             cv2.imshow('Select Prompt', image_display)
-            user_interactions += 1
+            if user_interactions > 0:
+                user_interaction_end = time.time()
     elif mode == 'point':
         if event == cv2.EVENT_LBUTTONDOWN:
             cv2.circle(image_display, (x, y), 5, (0, 255, 0), -1)
             cv2.imshow('Select Prompt', image_display)
             points.append((x, y))
             user_interactions += 1
+            if user_interactions == 1:
+                user_interaction_start = time.time()
+            user_interaction_end = time.time()
 
 def monitor_resource_usage(interval, stop_event, resource_stats):
     process = psutil.Process()
@@ -71,13 +77,15 @@ def monitor_resource_usage(interval, stop_event, resource_stats):
         mem_info = pynvml.nvmlDeviceGetMemoryInfo(gpu_handle)
         gpu_mem_usage = mem_info.used / (1024 ** 2)
         gpu_util = pynvml.nvmlDeviceGetUtilizationRates(gpu_handle).gpu
+        energy_usage = pynvml.nvmlDeviceGetPowerUsage(gpu_handle) / 1000  # in watts
         resource_stats['cpu_usage'].append(cpu_usage)
         resource_stats['gpu_mem_usage'].append(gpu_mem_usage)
         resource_stats['gpu_utilization'].append(gpu_util)
+        resource_stats['energy_usage'].append(energy_usage)
         time.sleep(interval)
 
 def main():
-    global mode, image_display, points, fx, fy, drawing, user_interactions
+    global mode, image_display, points, fx, fy, drawing, user_interactions, user_interaction_start, user_interaction_end
 
     process = psutil.Process()
     tracemalloc.start()
@@ -117,8 +125,8 @@ def main():
     cv2.destroyAllWindows()
 
     # Initialize data structures for resource tracking
-    resource_stats_sam = {'cpu_usage': [], 'gpu_mem_usage': [], 'gpu_utilization': []}
-    resource_stats_apriltag = {'cpu_usage': [], 'gpu_mem_usage': [], 'gpu_utilization': []}
+    resource_stats_sam = {'cpu_usage': [], 'gpu_mem_usage': [], 'gpu_utilization': [], 'energy_usage': []}
+    resource_stats_apriltag = {'cpu_usage': [], 'gpu_mem_usage': [], 'gpu_utilization': [], 'energy_usage': []}
 
     # ================= SAM Method =================
     start_time_sam = time.time()
@@ -132,7 +140,6 @@ def main():
     )
     monitor_thread_sam.start()
 
-    step_times_sam = {}
     sam_checkpoint = "sam_vit_h_4b8939.pth"
     model_type = "vit_h"
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
@@ -170,6 +177,49 @@ def main():
     time_sam = end_time_sam - start_time_sam
     mem_usage_sam = mem_after_sam - mem_before_sam
 
+    # Process segmentation to extract corners
+    mask_uint8 = (mask * 255).astype(np.uint8)
+    contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contour = max(contours, key=cv2.contourArea)
+    epsilon = 0.01 * cv2.arcLength(contour, True)
+    approx_polygon = cv2.approxPolyDP(contour, epsilon, True)
+
+    if len(approx_polygon) == 4:
+        corners = approx_polygon.reshape(4, 2)
+    else:
+        print("Error: Could not find a quadrilateral in the segmentation.")
+        return
+
+    image_points_sam = order_corners(corners)
+
+    # Define real-world coordinates for AprilTag corners
+    tag_size = 0.1
+    half_size = tag_size / 2.0
+    object_points = np.array([
+        [-half_size, -half_size, 0],
+        [half_size, -half_size, 0],
+        [half_size, half_size, 0],
+        [-half_size, half_size, 0]
+    ], dtype=np.float32)
+
+    # Camera parameters
+    fx_cam, fy_cam = 800, 800
+    cx, cy = image.shape[1] / 2, image.shape[0] / 2
+    camera_matrix = np.array([
+        [fx_cam, 0, cx],
+        [0, fy_cam, cy],
+        [0, 0, 1]
+    ], dtype=np.float32)
+    dist_coeffs = np.zeros((4, 1))
+
+    success_sam, rotation_vector_sam, translation_vector_sam = cv2.solvePnP(
+        object_points,
+        image_points_sam.astype(np.float32),
+        camera_matrix,
+        dist_coeffs,
+        flags=cv2.SOLVEPNP_ITERATIVE
+    )
+
     # ================= pyAprilTags Method =================
     start_time_apriltag = time.time()
     mem_before_apriltag = process.memory_info().rss / 1024 ** 2
@@ -184,11 +234,8 @@ def main():
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     detector = Detector(families='tag36h11')
-    fx_cam, fy_cam = 800, 800
-    cx, cy = image.shape[1] / 2, image.shape[0] / 2
     camera_params = (fx_cam, fy_cam, cx, cy)
-    tag_size_reference = 0.1
-    results = detector.detect(gray, estimate_tag_pose=True, camera_params=camera_params, tag_size=tag_size_reference)
+    results = detector.detect(gray, estimate_tag_pose=True, camera_params=camera_params, tag_size=tag_size)
 
     stop_event_apriltag.set()
     monitor_thread_apriltag.join()
@@ -200,112 +247,124 @@ def main():
     time_apriltag = end_time_apriltag - start_time_apriltag
     mem_usage_apriltag = mem_after_apriltag - mem_before_apriltag
 
+    if results:
+        result = results[0]
+        rotation_matrix_sam, _ = cv2.Rodrigues(rotation_vector_sam)
+        rotation_matrix_apriltag = result.pose_R
+        t_vector_apriltag = result.pose_t
+
+        # Calculate differences between poses
+        rotation_diff = rotation_matrix_sam - rotation_matrix_apriltag
+        translation_diff = translation_vector_sam - t_vector_apriltag
+
+        # Norm of differences
+        rotation_diff_norm = np.linalg.norm(rotation_diff)
+        translation_diff_norm = np.linalg.norm(translation_diff)
+
+    # Calculate user interaction time
+    user_interaction_time = user_interaction_end - user_interaction_start if user_interaction_start and user_interaction_end else 0
+
     # ================= Visualization Functions =================
     def add_labels(bars):
         for bar in bars:
             yval = bar.get_height()
-            plt.text(bar.get_x() + bar.get_width()/2, yval, round(yval, 2), ha="center", va="bottom")
+            plt.text(bar.get_x() + bar.get_width() / 2, yval, f'{yval:.2f}', ha="center", va="bottom", fontsize=10,
+                     color="black")
 
     def plot_execution_time(execution_times):
         plt.figure(figsize=(10, 6))
-        bars = plt.bar(execution_times.keys(), execution_times.values(), color=['blue', 'orange'])
-        plt.title('Execution Time Comparison')
-        plt.ylabel('Time (seconds)')
+        bars = plt.bar(execution_times.keys(), execution_times.values(), color=['#5DADE2', '#F1948A'], width=0.6)
+        plt.title('Execution Time Comparison', fontsize=16, fontweight='bold')
+        plt.ylabel('Time (seconds)', fontsize=12)
+        plt.xticks(rotation=45, fontsize=10)
         add_labels(bars)
+        plt.tight_layout()
+        plt.savefig('execution_time_comparison.png', dpi=300)
         plt.show()
 
     def plot_memory_usage(memory_usage):
         plt.figure(figsize=(10, 6))
-        bars = plt.bar(memory_usage.keys(), memory_usage.values(), color=['blue', 'orange'])
-        plt.title('Memory Usage Comparison')
-        plt.ylabel('Memory Usage (MB)')
+        bars = plt.bar(memory_usage.keys(), memory_usage.values(), color=['#82E0AA', '#F7DC6F'], width=0.6)
+        plt.title('Memory Usage Comparison', fontsize=16, fontweight='bold')
+        plt.ylabel('Memory Usage (MB)', fontsize=12)
+        plt.xticks(rotation=45, fontsize=10)
         add_labels(bars)
+        plt.tight_layout()
+        plt.savefig('memory_usage_comparison.png', dpi=300)
         plt.show()
 
-    def plot_cpu_gpu_usage(avg_cpu_usage, avg_gpu_usage, avg_gpu_mem_usage):
+    def plot_cpu_gpu_usage(avg_cpu_usage, avg_gpu_usage, avg_gpu_mem_usage, avg_energy_usage):
         plt.figure(figsize=(10, 6))
-        bars = plt.bar(avg_cpu_usage.keys(), avg_cpu_usage.values(), color=['blue', 'orange'])
-        plt.title('Average CPU Usage Comparison')
-        plt.ylabel('CPU Usage (%)')
+        bars = plt.bar(avg_cpu_usage.keys(), avg_cpu_usage.values(), color=['#AF7AC5', '#F0B27A'], width=0.6)
+        plt.title('Average CPU Usage Comparison', fontsize=16, fontweight='bold')
+        plt.ylabel('CPU Usage (%)', fontsize=12)
+        plt.xticks(rotation=45, fontsize=10)
         add_labels(bars)
+        plt.tight_layout()
+        plt.savefig('cpu_usage_comparison.png', dpi=300)
         plt.show()
 
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
+        bars1 = ax1.bar(avg_gpu_mem_usage.keys(), avg_gpu_mem_usage.values(), color=['#76D7C4', '#F5B7B1'], width=0.6)
+        ax1.set_title('Average GPU Memory Usage Comparison', fontsize=16, fontweight='bold')
+        ax1.set_ylabel('GPU Memory Usage (MB)', fontsize=12)
+        ax1.tick_params(axis='x', labelrotation=45)
+        add_labels(bars1)
 
-        # GPU Memory Usage
-        bars1 = ax1.bar(avg_gpu_mem_usage.keys(), avg_gpu_mem_usage.values(), color=['blue', 'orange'])
-        ax1.set_title('Average GPU Memory Usage Comparison')
-        ax1.set_ylabel('GPU Memory Usage (MB)')
-        for bar in bars1:
-            yval = bar.get_height()
-            ax1.text(bar.get_x() + bar.get_width()/2, yval, round(yval, 2), ha="center", va="bottom")
+        bars2 = ax2.bar(avg_energy_usage.keys(), avg_energy_usage.values(), color=['#85C1E9', '#D7BDE2'], width=0.6)
+        ax2.set_title('Average Energy Usage Comparison', fontsize=16, fontweight='bold')
+        ax2.set_ylabel('Energy Usage (Watts)', fontsize=12)
+        ax2.tick_params(axis='x', labelrotation=45)
+        add_labels(bars2)
 
-        # GPU Utilization
-        bars2 = ax2.bar(avg_gpu_usage.keys(), avg_gpu_usage.values(), color=['blue', 'orange'])
-        ax2.set_title('Average GPU Utilization Comparison')
-        ax2.set_ylabel('GPU Utilization (%)')
-        for bar in bars2:
-            yval = bar.get_height()
-            ax2.text(bar.get_x() + bar.get_width()/2, yval, round(yval, 2), ha="center", va="bottom")
-
-        plt.show()
-
-    def plot_step_times(step_times_sam, step_times_apriltag):
-        # Step-Wise Time Breakdown for SAM
-        plt.figure(figsize=(12, 6))
-        bars = plt.bar(step_times_sam.keys(), step_times_sam.values(), color='blue')
-        plt.title('Step-Wise Time Breakdown for SAM')
-        plt.xlabel('Steps')
-        plt.ylabel('Time (seconds)')
-        plt.xticks(rotation=45, ha="right")
-        add_labels(bars)
-        plt.show()
-
-        # Step-Wise Time Breakdown for pyAprilTags
-        plt.figure(figsize=(12, 6))
-        bars = plt.bar(step_times_apriltag.keys(), step_times_apriltag.values(), color='orange')
-        plt.title('Step-Wise Time Breakdown for pyAprilTags')
-        plt.xlabel('Steps')
-        plt.ylabel('Time (seconds)')
-        plt.xticks(rotation=45, ha="right")
-        add_labels(bars)
+        plt.tight_layout()
+        plt.savefig('gpu_memory_energy_usage_comparison.png', dpi=300)
         plt.show()
 
     def plot_pose_diff_norms(pose_diff_norms):
         plt.figure(figsize=(10, 6))
-        bars = plt.bar(pose_diff_norms.keys(), pose_diff_norms.values(), color=['green', 'red'])
-        plt.title('Pose Difference Norms')
-        plt.ylabel('Norm of Difference')
+        bars = plt.bar(pose_diff_norms.keys(), pose_diff_norms.values(), color=['#58D68D', '#E59866'], width=0.6)
+        plt.title('Pose Difference Norms', fontsize=16, fontweight='bold')
+        plt.ylabel('Norm of Difference', fontsize=12)
+        plt.xticks(rotation=45, fontsize=10)
         add_labels(bars)
+        plt.tight_layout()
+        plt.savefig('pose_difference_norms.png', dpi=300)
+        plt.show()
+
+    def plot_reprojection_errors(errors):
+        plt.figure(figsize=(10, 6))
+        bars = plt.bar(errors.keys(), errors.values(), color=['#5499C7', '#AF7AC5'], width=0.6)
+        plt.title('Reprojection Error Comparison', fontsize=16, fontweight='bold')
+        plt.ylabel('Reprojection Error', fontsize=12)
+        plt.xticks(rotation=45, fontsize=10)
+        add_labels(bars)
+        plt.tight_layout()
+        plt.savefig('reprojection_error_comparison.png', dpi=300)
         plt.show()
 
     # ================= Call Visualization Functions =================
     avg_cpu_usage_sam = sum(resource_stats_sam['cpu_usage']) / len(resource_stats_sam['cpu_usage']) if resource_stats_sam['cpu_usage'] else 0
     avg_gpu_mem_usage_sam = sum(resource_stats_sam['gpu_mem_usage']) / len(resource_stats_sam['gpu_mem_usage']) if resource_stats_sam['gpu_mem_usage'] else 0
     avg_gpu_util_sam = sum(resource_stats_sam['gpu_utilization']) / len(resource_stats_sam['gpu_utilization']) if resource_stats_sam['gpu_utilization'] else 0
+    avg_energy_usage_sam = sum(resource_stats_sam['energy_usage']) / len(resource_stats_sam['energy_usage']) if resource_stats_sam['energy_usage'] else 0
 
     avg_cpu_usage_apriltag = sum(resource_stats_apriltag['cpu_usage']) / len(resource_stats_apriltag['cpu_usage']) if resource_stats_apriltag['cpu_usage'] else 0
     avg_gpu_mem_usage_apriltag = sum(resource_stats_apriltag['gpu_mem_usage']) / len(resource_stats_apriltag['gpu_mem_usage']) if resource_stats_apriltag['gpu_mem_usage'] else 0
     avg_gpu_util_apriltag = sum(resource_stats_apriltag['gpu_utilization']) / len(resource_stats_apriltag['gpu_utilization']) if resource_stats_apriltag['gpu_utilization'] else 0
+    avg_energy_usage_apriltag = sum(resource_stats_apriltag['energy_usage']) / len(resource_stats_apriltag['energy_usage']) if resource_stats_apriltag['energy_usage'] else 0
 
     plot_execution_time({'SAM': time_sam, 'pyAprilTags': time_apriltag})
     plot_memory_usage({'SAM': mem_usage_sam, 'pyAprilTags': mem_usage_apriltag})
     plot_cpu_gpu_usage({'SAM': avg_cpu_usage_sam, 'pyAprilTags': avg_cpu_usage_apriltag},
                        {'SAM': avg_gpu_util_sam, 'pyAprilTags': avg_gpu_util_apriltag},
-                       {'SAM': avg_gpu_mem_usage_sam, 'pyAprilTags': avg_gpu_mem_usage_apriltag})
+                       {'SAM': avg_gpu_mem_usage_sam, 'pyAprilTags': avg_gpu_mem_usage_apriltag},
+                       {'SAM': avg_energy_usage_sam, 'pyAprilTags': avg_energy_usage_apriltag})
 
-    step_times_sam = {'Model Loading': 4.0662, 'Set Image': 17.5868, 'Prediction': 0.0829, 'Mask Extraction': 0.0000,
-                      'Post-processing': 0.0070, 'Contour Detection': 0.0050, 'Corner Extraction': 0.0000,
-                      'Corner Ordering': 0.0010, 'Pose Estimation': 0.0080, 'Visualization': 0.0010}
-    step_times_apriltag = {'Grayscale Conversion': 0.0010, 'Detector Initialization': 0.0490, 'Tag Detection': 0.0020,
-                           'Pose Estimation': 0.0000, 'Visualization': 0.0000}
-
-    plot_step_times(step_times_sam, step_times_apriltag)
-
-    rotation_diff_norm = 0.0212  # Example placeholder value
-    translation_diff_norm = 0.0214  # Example placeholder value
     plot_pose_diff_norms({'Rotation': rotation_diff_norm, 'Translation': translation_diff_norm})
+    # plot_reprojection_errors({'SAM': reprojection_error_sam, 'pyAprilTags': reprojection_error_apriltag})
+
+    print(f"User Interaction Time: {user_interaction_time:.2f} seconds")
 
 if __name__ == "__main__":
     main()
-
