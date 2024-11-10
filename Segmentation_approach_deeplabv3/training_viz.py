@@ -167,8 +167,8 @@ if __name__ == "__main__":
     model = model.to(device)
 
     # Load validation DataLoader
-    images_dir = '../dataset_segmentation/images/'
-    masks_dir = '../dataset_segmentation/masks/'
+    images_dir = '../dataset_segmentation_warp/images/'
+    masks_dir = '../dataset_segmentation_warp/masks/'
     _, val_loader = get_dataloaders(images_dir, masks_dir, batch_size=4, num_workers=4)
 
     # Visualize and save predictions with overlay

@@ -51,47 +51,27 @@ def predict_and_overlay(image_path):
 
     return image_rgb, pred_mask_resized, blended_image
 
-# start, end = 0, 2000
-# # Run inference on the test image
-# for i in range(10):
-#     random_number = random.randint(start, end)
-#     test_image_path = f'../dataset_segmentation_warp/images/image_{random_number}.jpg'
-#     image_rgb, pred_mask_resized, blended_image = predict_and_overlay(test_image_path)
-#
-#     # Visualize the results
-#     plt.figure(figsize=(15, 5))
-#     plt.subplot(1, 3, 1)
-#     plt.imshow(image_rgb)
-#     plt.title("Input Image")
-#     plt.axis("off")
-#
-#     plt.subplot(1, 3, 2)
-#     plt.imshow(pred_mask_resized, cmap="gray")
-#     plt.title("Predicted Mask")
-#     plt.axis("off")
-#
-#     plt.subplot(1, 3, 3)
-#     plt.imshow(blended_image)
-#     plt.title("Overlay")
-#     plt.axis("off")
-#     plt.show()
-test_image_path = '../SAM_approach/tags3.jpg'
-image_rgb, pred_mask_resized, blended_image = predict_and_overlay(test_image_path)
+start, end = 0, 2000
+# Run inference on the test image
+for i in range(10):
+    random_number = random.randint(start, end)
+    test_image_path = f'../dataset_segmentation_warp/images/image_{random_number}.jpg'
+    image_rgb, pred_mask_resized, blended_image = predict_and_overlay(test_image_path)
 
-# Visualize the results
-plt.figure(figsize=(15, 5))
-plt.subplot(1, 3, 1)
-plt.imshow(image_rgb)
-plt.title("Input Image")
-plt.axis("off")
+    # Visualize the results
+    plt.figure(figsize=(15, 5))
+    plt.subplot(1, 3, 1)
+    plt.imshow(image_rgb)
+    plt.title("Input Image")
+    plt.axis("off")
 
-plt.subplot(1, 3, 2)
-plt.imshow(pred_mask_resized, cmap="gray")
-plt.title("Predicted Mask")
-plt.axis("off")
+    plt.subplot(1, 3, 2)
+    plt.imshow(pred_mask_resized, cmap="gray")
+    plt.title("Predicted Mask")
+    plt.axis("off")
 
-plt.subplot(1, 3, 3)
-plt.imshow(blended_image)
-plt.title("Overlay")
-plt.axis("off")
-plt.show()
+    plt.subplot(1, 3, 3)
+    plt.imshow(blended_image)
+    plt.title("Overlay")
+    plt.axis("off")
+    plt.show()
