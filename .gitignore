@@ -36,6 +36,8 @@ Segmentation_approach_deeplabv3/models
 Segmentation_approach_deeplabv3/backgrounds
 SAM_approach/sam_vit_h_4b8939.pth
 Segmentation_approach_deeplabv3/old_runs
+SAM_approach/GroundingDINO
+
 
 # Ignore commonly used IDE directories
 .vscode/
