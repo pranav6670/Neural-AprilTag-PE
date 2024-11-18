@@ -123,7 +123,7 @@ def detect_tags_with_black_borders(image_path, sam_checkpoint="sam_vit_h_4b8939.
         print("No quadrilateral found in the segmentation.")
         return
 
-    # **Order the corners consistently**
+    # Order the corners consistently
     image_points_sam = order_corners(corners)
 
     # Visualize the detected corners
@@ -219,48 +219,84 @@ def detect_tags_with_black_borders(image_path, sam_checkpoint="sam_vit_h_4b8939.
         print("No tags detected by pyAprilTags.")
         return
 
-    # Assume the first detected tag
-    result = results[0]
-
-    # Get pose estimation from pyAprilTags
-    t_vector_apriltag = result.pose_t  # Translation vector
-    r_matrix_apriltag = result.pose_R  # Rotation matrix
-
-    # Convert rotation matrix to rotation vector
-    rotation_vector_apriltag, _ = cv2.Rodrigues(r_matrix_apriltag)
-
-    # Visualize Pose (pyAprilTags method)
-    # Define points for the axes in 3D space
-    axis_length = tag_size_reference * 0.5  # Length of the overlayed axis
-    axis_3D_points = np.float32([
-        [0, 0, 0],                   # Origin at center of tag
-        [axis_length, 0, 0],         # X-axis
-        [0, axis_length, 0],         # Y-axis
-        [0, 0, -axis_length],        # Z-axis
-    ])
-
-    # Project 3D points to image plane
-    image_points_axes_apriltag, _ = cv2.projectPoints(
-        axis_3D_points,
-        rotation_vector_apriltag,
-        t_vector_apriltag,
-        camera_matrix,
-        dist_coeffs
-    )
-
-    # Convert points to integer coordinates
-    image_points_axes_apriltag = image_points_axes_apriltag.reshape(-1, 2).astype(int)
-
-    # Draw the coordinate axes on the image (pyAprilTags method)
+    # Create a copy of the image for visualization
     image_pose_apriltag = image.copy()
-    corner_apriltag = tuple(image_points_axes_apriltag[0])  # Origin point at center of tag
-    cv2.line(image_pose_apriltag, corner_apriltag, tuple(image_points_axes_apriltag[1]), (0, 0, 255), 3)  # X-axis in red
-    cv2.line(image_pose_apriltag, corner_apriltag, tuple(image_points_axes_apriltag[2]), (0, 255, 0), 3)  # Y-axis in green
-    cv2.line(image_pose_apriltag, corner_apriltag, tuple(image_points_axes_apriltag[3]), (255, 0, 0), 3)  # Z-axis in blue
 
-    # Draw the center of the tag
-    (cX, cY) = (int(result.center[0]), int(result.center[1]))
-    cv2.circle(image_pose_apriltag, (cX, cY), 5, (0, 0, 255), -1)
+    # Process each detected tag
+    for result in results:
+        # Extract tag information
+        tag_id = result.tag_id
+        tag_family = result.tag_family.decode('utf-8')
+        tag_center = result.center
+        tag_corners = result.corners
+
+        print(f"Detected Tag ID: {tag_id}")
+        print(f"Tag Family: {tag_family}")
+        print(f"Tag Center: {tag_center}")
+        print(f"Tag Corners:\n{tag_corners}")
+
+        # Get pose estimation from pyAprilTags
+        t_vector_apriltag = result.pose_t  # Translation vector
+        r_matrix_apriltag = result.pose_R  # Rotation matrix
+
+        # Convert rotation matrix to rotation vector
+        rotation_vector_apriltag, _ = cv2.Rodrigues(r_matrix_apriltag)
+
+        # Visualize Pose (pyAprilTags method)
+        # Define points for the axes in 3D space
+        axis_length = tag_size_reference * 0.5  # Length of the overlayed axis
+        axis_3D_points = np.float32([
+            [0, 0, 0],                   # Origin at center of tag
+            [axis_length, 0, 0],         # X-axis
+            [0, axis_length, 0],         # Y-axis
+            [0, 0, -axis_length],        # Z-axis
+        ])
+
+        # Project 3D points to image plane
+        image_points_axes_apriltag, _ = cv2.projectPoints(
+            axis_3D_points,
+            rotation_vector_apriltag,
+            t_vector_apriltag,
+            camera_matrix,
+            dist_coeffs
+        )
+
+        # Convert points to integer coordinates
+        image_points_axes_apriltag = image_points_axes_apriltag.reshape(-1, 2).astype(int)
+
+        # Draw the coordinate axes on the image (pyAprilTags method)
+        corner_apriltag = tuple(image_points_axes_apriltag[0])  # Origin point at center of tag
+        cv2.line(image_pose_apriltag, corner_apriltag, tuple(image_points_axes_apriltag[1]), (0, 0, 255), 3)  # X-axis in red
+        cv2.line(image_pose_apriltag, corner_apriltag, tuple(image_points_axes_apriltag[2]), (0, 255, 0), 3)  # Y-axis in green
+        cv2.line(image_pose_apriltag, corner_apriltag, tuple(image_points_axes_apriltag[3]), (255, 0, 0), 3)  # Z-axis in blue
+
+        # Draw the bounding box around the tag
+        for idx in range(4):
+            pt1 = tuple(map(int, tag_corners[idx]))
+            pt2 = tuple(map(int, tag_corners[(idx + 1) % 4]))
+            cv2.line(image_pose_apriltag, pt1, pt2, (0, 255, 0), 2)
+
+        # Draw the center of the tag
+        (cX, cY) = (int(tag_center[0]), int(tag_center[1]))
+        cv2.circle(image_pose_apriltag, (cX, cY), 5, (0, 0, 255), -1)
+
+        # **Order the corners to find the top-right corner**
+        ordered_corners = order_corners(tag_corners)
+
+        # Get the top-right corner
+        top_right_corner = ordered_corners[1]
+        x, y = int(top_right_corner[0]), int(top_right_corner[1])
+
+        # **Annotate the tag ID at the top-right corner**
+        cv2.putText(
+            image_pose_apriltag,
+            f"ID: {tag_id}",
+            (x - 40, y - 10),  # Adjust offsets as needed
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 0, 0),
+            2
+        )
 
     # ================================
     # Comparison of Both Methods
@@ -301,6 +337,11 @@ def detect_tags_with_black_borders(image_path, sam_checkpoint="sam_vit_h_4b8939.
     print("\nNorm of Rotation Matrix Difference:", rotation_diff_norm)
     print("Norm of Translation Vector Difference:", translation_diff_norm)
 
+    # Display the image with the detected tag and ID
+    cv2.imshow('Detected Tag with ID', image_pose_apriltag)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
 # Call the function
-image_path = 'tags4.jpg'
+image_path = 'tags4.jpg'  # Replace with the path to your image
 detect_tags_with_black_borders(image_path)
