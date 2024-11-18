@@ -64,7 +64,7 @@ def main():
     global mode, image_display, points, fx, fy, drawing
 
     # Load the image containing the AprilTag
-    image_path = 'tags4.jpg'
+    image_path = 'tags17.png'
     image = cv2.imread(image_path)
 
     if image is None:
@@ -121,6 +121,8 @@ def main():
     # Load the model
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
     predictor = SamPredictor(sam)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Select GPU if available
+    sam.to(device)  # Move SAM model to the GPU
 
     # Set the image for the predictor
     predictor.set_image(image)
