@@ -1,14 +1,9 @@
-# Import necessary libraries
 import cv2
 import numpy as np
 import torch
-from segment_anything import sam_model_registry, SamPredictor
+from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 import matplotlib.pyplot as plt
-import warnings
 from pyapriltags import Detector
-from scipy.spatial.transform import Rotation as R
-
-warnings.filterwarnings("ignore")
 
 # Function to order the corners consistently
 def order_corners(pts):
@@ -25,202 +20,123 @@ def order_corners(pts):
 
     return rect
 
-# Global variables for mouse callback
-drawing = False  # True if the mouse is pressed
-ix, iy = -1, -1
-fx, fy = -1, -1
-mode = 'box'  # 'box' or 'point'
-points = []
-
-def select_prompt(event, x, y, flags, param):
-    global ix, iy, fx, fy, drawing, mode, image_display, points
-
-    if mode == 'box':
-        if event == cv2.EVENT_LBUTTONDOWN:
-            drawing = True
-            ix, iy = x, y
-            fx, fy = x, y
-
-        elif event == cv2.EVENT_MOUSEMOVE:
-            if drawing:
-                fx, fy = x, y
-                img_copy = image_display.copy()
-                cv2.rectangle(img_copy, (ix, iy), (fx, fy), (0, 255, 0), 2)
-                cv2.imshow('Select Prompt', img_copy)
-
-        elif event == cv2.EVENT_LBUTTONUP:
-            drawing = False
-            fx, fy = x, y
-            cv2.rectangle(image_display, (ix, iy), (fx, fy), (0, 255, 0), 2)
-            cv2.imshow('Select Prompt', image_display)
-
-    elif mode == 'point':
-        if event == cv2.EVENT_LBUTTONDOWN:
-            cv2.circle(image_display, (x, y), 5, (0, 255, 0), -1)
-            cv2.imshow('Select Prompt', image_display)
-            points.append((x, y))
-
-def main():
-    global mode, image_display, points, fx, fy, drawing
-
-    # Load the image containing the AprilTag
-    image_path = 'tags4.jpg'
+def detect_tags_with_black_borders(image_path, sam_checkpoint="sam_vit_h_4b8939.pth", model_type="vit_h"):
+    # Load the image
     image = cv2.imread(image_path)
-
     if image is None:
         print("Error: Could not read the image.")
         return
 
-    image_display = image.copy()
-
-    # Prompt the user to select the mode
-    print("Select prompt mode:")
-    print("1. Bounding Box")
-    print("2. Point(s)")
-    mode_input = input("Enter 1 or 2: ")
-
-    if mode_input == '1':
-        mode = 'box'
-    elif mode_input == '2':
-        mode = 'point'
-        points = []
-    else:
-        print("Invalid input.")
-        return
-
-    # Set up the window and mouse callback
-    cv2.namedWindow('Select Prompt')
-    cv2.setMouseCallback('Select Prompt', select_prompt)
-
-    print("Instructions:")
-    if mode == 'box':
-        print("- Draw a bounding box around the AprilTag by clicking and dragging.")
-    elif mode == 'point':
-        print("- Click on the image to select points inside the AprilTag.")
-        print("- Press 'q' when done selecting points.")
-
-    cv2.imshow('Select Prompt', image_display)
-
-    while True:
-        key = cv2.waitKey(1) & 0xFF
-        if mode == 'box' and not drawing and (fx != -1 and fy != -1):
-            break
-        if mode == 'point' and key == ord('q'):
-            break
-
-    cv2.destroyAllWindows()
-
-    # ================================
-    # Segment Anything Model (SAM) Method
-    # ================================
-
     # Initialize SAM
-    sam_checkpoint = "sam_vit_h_4b8939.pth"
-    model_type = "vit_h"
-
-    # Load the model
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
-    predictor = SamPredictor(sam)
+    mask_generator = SamAutomaticMaskGenerator(sam)
 
-    # Set the image for the predictor
-    predictor.set_image(image)
+    # Generate masks automatically
+    masks = mask_generator.generate(image)
 
-    # Provide prompts to SAM
-    if mode == 'box':
-        input_box = np.array([ix, iy, fx, fy])
-        masks, _, _ = predictor.predict(
-            point_coords=None,
-            point_labels=None,
-            box=input_box[None, :],
-            multimask_output=False,
-        )
-    elif mode == 'point':
-        if len(points) == 0:
-            print("No points selected.")
-            return
-        input_point = np.array(points)
-        input_label = np.ones(len(points))  # Labels: 1 for foreground
-        masks, _, _ = predictor.predict(
-            point_coords=input_point,
-            point_labels=input_label,
-            multimask_output=False,
-        )
-    else:
-        print("Invalid mode.")
-        return
-
-    # Obtain the segmentation mask
-    mask = masks[0]
-
-    # Visualize the segmentation mask
+    # Debug: Visualize all generated masks
     plt.figure(figsize=(10, 10))
     plt.imshow(image[..., ::-1])
-    plt.imshow(mask, alpha=0.5)
-    plt.title('Segmentation Mask Overlay')
+    for mask in masks:
+        plt.contour(mask['segmentation'], colors=['blue'], levels=[0.5])
+    plt.title('All Generated Masks')
     plt.axis('off')
     plt.show()
 
-    # Convert the mask to uint8
-    mask_uint8 = (mask * 255).astype(np.uint8)
+    # Filter masks to find ones with black borders
+    selected_mask = None
+    for mask in masks:
+        # Convert the mask to uint8
+        mask_region = (mask['segmentation'] * 255).astype(np.uint8)
+
+        # Apply the mask to the image
+        masked_image = cv2.bitwise_and(image, image, mask=mask_region)
+
+        # Convert to grayscale for border analysis
+        gray = cv2.cvtColor(masked_image, cv2.COLOR_BGR2GRAY)
+
+        # Find contours of the mask
+        contours, _ = cv2.findContours(mask_region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            continue
+
+        # Get the largest contour (assume it's the relevant tag)
+        contour = max(contours, key=cv2.contourArea)
+
+        # Approximate the contour to a polygon
+        epsilon = 0.02 * cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+
+        # Check if the polygon has 4 sides (quadrilateral)
+        if len(approx) != 4:
+            continue
+
+        # Extract the bounding box for border analysis
+        x, y, w, h = cv2.boundingRect(contour)
+        border = gray[y:y+h, x:x+w]
+
+        # Check if the border is predominantly black
+        border_pixels = border.flatten()
+        black_pixel_ratio = np.sum(border_pixels < 50) / len(border_pixels)  # Adjust threshold as needed
+
+        if black_pixel_ratio > 0.6:  # Adjust threshold based on your dataset
+            selected_mask = mask
+            break
+
+    if selected_mask is None:
+        print("No suitable tag with a black border was found.")
+        return
+
+    # Visualize the selected mask
+    plt.figure(figsize=(10, 10))
+    plt.imshow(image[..., ::-1])
+    plt.imshow(selected_mask['segmentation'], alpha=0.5, cmap='jet')
+    plt.title('Selected Mask with Black Border')
+    plt.axis('off')
+    plt.show()
+
+    # Extract the selected mask and refine it
+    mask = selected_mask['segmentation'].astype(np.uint8) * 255
 
     # Apply morphological operations to clean up the mask
     kernel = np.ones((5, 5), np.uint8)
-    mask_uint8 = cv2.morphologyEx(mask_uint8, cv2.MORPH_CLOSE, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
-    # Find contours
-    contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
+    # Find contours again for the selected mask
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         print("Error: No contours found in the mask.")
         return
 
-    # Assume the largest contour corresponds to the tag
+    # Assume the largest contour is the tag
     contour = max(contours, key=cv2.contourArea)
 
     # Approximate the contour to a polygon
-    epsilon = 0.01 * cv2.arcLength(contour, True)  # Adjust epsilon as needed
+    epsilon = 0.01 * cv2.arcLength(contour, True)  # Reduced epsilon for higher accuracy
     approx_polygon = cv2.approxPolyDP(contour, epsilon, True)
 
-    # Debug: Draw the contour approximation
-    contour_image = image.copy()
-    cv2.drawContours(contour_image, [approx_polygon], -1, (0, 255, 0), 2)
-    cv2.imshow('Contour Approximation', contour_image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
-    # Check if the polygon has 4 sides (quadrilateral)
+    # Check if the polygon has 4 sides
     if len(approx_polygon) == 4:
         corners = approx_polygon.reshape(4, 2)
+        print("Detected a quadrilateral for the tag.")
     else:
-        # Try to find a quadrilateral among all contours
-        found_quad = False
-        for contour in contours:
-            epsilon = 0.01 * cv2.arcLength(contour, True)
-            approx_polygon = cv2.approxPolyDP(contour, epsilon, True)
-            if len(approx_polygon) == 4:
-                corners = approx_polygon.reshape(4, 2)
-                found_quad = True
-                break
-        if not found_quad:
-            print("Error: Could not find a quadrilateral in the segmentation.")
-            return
+        print("No quadrilateral found in the segmentation.")
+        return
 
-    # Order the corners consistently
+    # **Order the corners consistently**
     image_points_sam = order_corners(corners)
 
-    # Display the image with the detected corners
+    # Visualize the detected corners
     image_sam_corners = image.copy()
     for point in image_points_sam:
         cv2.circle(image_sam_corners, tuple(point.astype(int)), 5, (0, 0, 255), -1)
-
     cv2.imshow('Detected Corners (SAM)', image_sam_corners)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
-    # Define the real-world coordinates of the tag corners relative to the center
-    tag_size = 0.1  # For example, 0.1 meters
+    # Pose Estimation using SAM
+    tag_size = 0.1  # Example: 0.1 meters
     half_size = tag_size / 2.0
-
     object_points = np.array([
         [-half_size, -half_size, 0],
         [ half_size, -half_size, 0],
@@ -228,8 +144,6 @@ def main():
         [-half_size,  half_size, 0]
     ], dtype=np.float32)
 
-    # Prepare camera parameters
-    # Replace these with your actual camera calibration parameters
     fx_cam, fy_cam = 800, 800  # Focal lengths
     cx, cy = image.shape[1] / 2, image.shape[0] / 2  # Principal point
 
@@ -241,7 +155,7 @@ def main():
 
     dist_coeffs = np.zeros((4, 1))  # Assuming no lens distortion
 
-    # Solve PnP for SAM method
+    # Solve PnP using SAM corners
     success_sam, rotation_vector_sam, translation_vector_sam = cv2.solvePnP(
         object_points,
         image_points_sam.astype(np.float32),
@@ -251,23 +165,21 @@ def main():
     )
 
     if not success_sam:
-        print("Error: Could not solve PnP problem for SAM method.")
+        print("Error: Could not solve PnP problem with SAM method.")
         return
 
     # Convert rotation vector to rotation matrix
     rotation_matrix_sam, _ = cv2.Rodrigues(rotation_vector_sam)
 
-    # Pose visualization shifted to the center (SAM method)
-    # Define the axes to be drawn from the center
-    axis_length = tag_size * 0.5  # Adjust the axis length as needed
+    # Visualize Pose (SAM method)
+    axis_length = tag_size * 0.5
     axis_3D_points = np.float32([
         [0, 0, 0],                   # Origin at center of tag
         [axis_length, 0, 0],         # X-axis
         [0, axis_length, 0],         # Y-axis
-        [0, 0, -axis_length],        # Z-axis (negative because OpenCV coordinate system)
+        [0, 0, -axis_length],        # Z-axis
     ])
 
-    # Project 3D points to image plane
     image_points_axes_sam, _ = cv2.projectPoints(
         axis_3D_points,
         rotation_vector_sam,
@@ -276,20 +188,16 @@ def main():
         dist_coeffs
     )
 
-    # Convert points to integer coordinates
     image_points_axes_sam = image_points_axes_sam.reshape(-1, 2).astype(int)
-
-    # Draw the coordinate axes on the image (SAM method)
     image_pose_sam = image.copy()
-    corner_sam = tuple(image_points_axes_sam[0])  # Origin point at center of tag
-    cv2.line(image_pose_sam, corner_sam, tuple(image_points_axes_sam[1]), (0, 0, 255), 3)  # X-axis in red
-    cv2.line(image_pose_sam, corner_sam, tuple(image_points_axes_sam[2]), (0, 255, 0), 3)  # Y-axis in green
-    cv2.line(image_pose_sam, corner_sam, tuple(image_points_axes_sam[3]), (255, 0, 0), 3)  # Z-axis in blue
+    corner_sam = tuple(image_points_axes_sam[0])
+    cv2.line(image_pose_sam, corner_sam, tuple(image_points_axes_sam[1]), (0, 0, 255), 3)  # X-axis
+    cv2.line(image_pose_sam, corner_sam, tuple(image_points_axes_sam[2]), (0, 255, 0), 3)  # Y-axis
+    cv2.line(image_pose_sam, corner_sam, tuple(image_points_axes_sam[3]), (255, 0, 0), 3)  # Z-axis
 
     # ================================
     # pyAprilTags Method
     # ================================
-
     # Convert image to grayscale for pyAprilTags
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
@@ -321,14 +229,14 @@ def main():
     # Convert rotation matrix to rotation vector
     rotation_vector_apriltag, _ = cv2.Rodrigues(r_matrix_apriltag)
 
-    # Pose visualization for pyAprilTags method
+    # Visualize Pose (pyAprilTags method)
     # Define points for the axes in 3D space
     axis_length = tag_size_reference * 0.5  # Length of the overlayed axis
     axis_3D_points = np.float32([
         [0, 0, 0],                   # Origin at center of tag
         [axis_length, 0, 0],         # X-axis
         [0, axis_length, 0],         # Y-axis
-        [0, 0, -axis_length],        # Z-axis (negative because OpenCV coordinate system)
+        [0, 0, -axis_length],        # Z-axis
     ])
 
     # Project 3D points to image plane
@@ -357,7 +265,6 @@ def main():
     # ================================
     # Comparison of Both Methods
     # ================================
-
     # Display the images side by side
     combined_image = np.hstack((image_pose_sam, image_pose_apriltag))
     cv2.imshow('Pose Estimation Comparison (Left: SAM, Right: pyAprilTags)', combined_image)
@@ -394,5 +301,6 @@ def main():
     print("\nNorm of Rotation Matrix Difference:", rotation_diff_norm)
     print("Norm of Translation Vector Difference:", translation_diff_norm)
 
-if __name__ == "__main__":
-    main()
+# Call the function
+image_path = 'tags4.jpg'
+detect_tags_with_black_borders(image_path)

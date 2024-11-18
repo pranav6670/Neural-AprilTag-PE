@@ -11,13 +11,13 @@ background_folder = '../backgrounds/'
 
 # Configuration dictionary
 config = {
-    'num_images': 20000,
+    'num_images': 100,
     'image_width': 640,
     'image_height': 480,
     'tag_family': 'tag36h11',
     'tag_size': 100,
-    'output_dir': '../dataset_segmentation_warp',
-    'num_tags_per_image': (1, 3),  # Min and max number of tags per image
+    'output_dir': '../dataset_segmentation_warp1',
+    'num_tags_per_image': (1, 1),  # Min and max number of tags per image
     'scale_factor_range': (0.5, 1.5)  # Scaling range for the tags
 }
 
@@ -43,15 +43,36 @@ def warp_tag_image(tag_image, intensity=0.2):
     return warped_tag
 
 
-# Function to generate an AprilTag image
-def generate_apriltag(tag_id, tag_family='tag36h11', tag_size=100):
+def generate_apriltag(tag_id, tag_family='tag36h11', tag_size=100, border_size_ratio=0.25):
+    """
+    Generate an AprilTag image with a proper quiet zone (white border) and solid black-and-white values.
+    """
+    # Validate tag family
     if tag_family == 'tag36h11':
         dictionary = aruco.getPredefinedDictionary(aruco.DICT_APRILTAG_36h11)
     else:
-        print("Unknown tag family")
-        return None
-    marker_image = aruco.generateImageMarker(dictionary, tag_id, tag_size)
-    return marker_image
+        raise ValueError("Unknown tag family: Supported families include 'tag36h11'.")
+
+    # Generate the inner tag grid
+    inner_tag = aruco.generateImageMarker(dictionary, tag_id, tag_size)
+
+    # Force binary values (black = 0, white = 255)
+    inner_tag_binary = (inner_tag > 127).astype(np.uint8) * 255
+
+    # Calculate border size
+    border_size = int(tag_size * border_size_ratio)
+
+    # Add a solid white border (quiet zone) around the tag
+    tag_with_border = cv2.copyMakeBorder(
+        inner_tag_binary,
+        border_size, border_size, border_size, border_size,
+        borderType=cv2.BORDER_CONSTANT,
+        value=255  # White for the border
+    )
+
+    return tag_with_border
+
+
 
 
 # Function to load a random background image from your folder
@@ -93,10 +114,13 @@ def check_overlap(bbox, existing_bboxes):
     return False
 
 
-# Function to overlay the AprilTag onto the background and generate the mask
 def overlay_apriltag(background_image, tag_image, existing_bboxes, scale_factor=1.0, max_attempts=50):
+    """
+    Overlay the AprilTag onto the background, ensuring solid black and white colors with no transparency.
+    """
     if background_image is None or tag_image is None:
         return None, None, None
+
     h_bg, w_bg, _ = background_image.shape
     h_tag, w_tag = tag_image.shape
 
@@ -104,44 +128,55 @@ def overlay_apriltag(background_image, tag_image, existing_bboxes, scale_factor=
     new_w_tag, new_h_tag = int(w_tag * scale_factor), int(h_tag * scale_factor)
     if new_w_tag <= 0 or new_h_tag <= 0:
         return None, None, None
-    tag_image_resized = cv2.resize(tag_image, (new_w_tag, new_h_tag))
+    tag_image_resized = cv2.resize(tag_image, (new_w_tag, new_h_tag), interpolation=cv2.INTER_AREA)
 
     # Warp tag image
-    tag_image_warped = warp_tag_image(tag_image_resized, intensity=0.1)
+    tag_image_warped = warp_tag_image(tag_image_resized, intensity=0.2)
 
     # Rotate tag image
-    angle = random.uniform(-180, 180)
+    angle = random.uniform(-45, 45)
     tag_image_rotated = rotate_image(tag_image_warped, angle)
     if tag_image_rotated is None or tag_image_rotated.size == 0:
         return None, None, None
 
-    # Create mask
-    mask = np.zeros((tag_image_rotated.shape[0], tag_image_rotated.shape[1]), dtype=np.uint8)
-    mask[tag_image_rotated < 128] = 255
+    # Explicitly force the tag image to binary (solid black and white)
+    _, tag_image_binary = cv2.threshold(tag_image_rotated, 127, 255, cv2.THRESH_BINARY)
 
     attempt = 0
     while attempt < max_attempts:
-        max_x, max_y = w_bg - tag_image_rotated.shape[1], h_bg - tag_image_rotated.shape[0]
+        max_x, max_y = w_bg - tag_image_binary.shape[1], h_bg - tag_image_binary.shape[0]
         if max_x <= 0 or max_y <= 0:
             return None, None, None
         x, y = random.randint(0, max_x), random.randint(0, max_y)
-        bbox = (x, y, tag_image_rotated.shape[1], tag_image_rotated.shape[0])
+        bbox = (x, y, tag_image_binary.shape[1], tag_image_binary.shape[0])
 
         if not check_overlap(bbox, existing_bboxes):
-            roi = background_image[y:y + tag_image_rotated.shape[0], x:x + tag_image_rotated.shape[1]]
-            tag_bgr = cv2.cvtColor(tag_image_rotated, cv2.COLOR_GRAY2BGR)
-            _, tag_mask = cv2.threshold(tag_image_rotated, 254, 255, cv2.THRESH_BINARY_INV)
+            # Extract the region of interest (ROI) from the background
+            roi = background_image[y:y + tag_image_binary.shape[0], x:x + tag_image_binary.shape[1]]
+
+            # Create binary masks for blending
+            tag_mask = (tag_image_binary < 128).astype(np.uint8) * 255  # Black regions
             tag_mask_inv = cv2.bitwise_not(tag_mask)
+
+            # Blend the tag with the background
             img_bg = cv2.bitwise_and(roi, roi, mask=tag_mask_inv)
-            tag_fg = cv2.bitwise_and(tag_bgr, tag_bgr, mask=tag_mask)
+            tag_fg = cv2.bitwise_and(cv2.cvtColor(tag_image_binary, cv2.COLOR_GRAY2BGR), cv2.cvtColor(tag_image_binary, cv2.COLOR_GRAY2BGR), mask=tag_mask)
+
+            # Overlay tag foreground onto the background
             dst = cv2.add(img_bg, tag_fg)
-            background_image[y:y + tag_image_rotated.shape[0], x:x + tag_image_rotated.shape[1]] = dst
+            background_image[y:y + dst.shape[0], x:x + dst.shape[1]] = dst
+
+            # Create the full mask for the tag
             full_mask = np.zeros((h_bg, w_bg), dtype=np.uint8)
-            full_mask[y:y + mask.shape[0], x:x + mask.shape[1]] = mask
+            full_mask[y:y + tag_mask.shape[0], x:x + tag_mask.shape[1]] = tag_mask
+
             return background_image, bbox, full_mask
         else:
             attempt += 1
     return None, None, None
+
+
+
 
 
 # Function to create a single image in the dataset with validation

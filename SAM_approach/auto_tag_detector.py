@@ -2,7 +2,7 @@
 import cv2
 import numpy as np
 import torch
-from segment_anything import sam_model_registry, SamPredictor
+from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 import matplotlib.pyplot as plt
 import warnings
 
@@ -12,7 +12,7 @@ warnings.filterwarnings("ignore")
 def order_corners(pts):
     rect = np.zeros((4, 2), dtype="float32")
 
-    # Sum and difference
+    # Sum and difference of points
     s = pts.sum(axis=1)
     diff = np.diff(pts, axis=1)
 
@@ -23,197 +23,191 @@ def order_corners(pts):
 
     return rect
 
+def visualize_masks(image, masks):
+    import random
+    import matplotlib.patches as patches
+
+    plt.figure(figsize=(10, 10))
+    plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    ax = plt.gca()
+
+    for mask_info in masks:
+        mask = mask_info['segmentation']
+        color = [random.random(), random.random(), random.random()]
+        img = np.ones((mask.shape[0], mask.shape[1], 3))
+        for i in range(3):
+            img[:, :, i] = color[i]
+        ax.imshow(np.dstack((img, mask * 0.35)))
+
+    plt.axis('off')
+    plt.show()
+
 def main():
-    # Load the image containing the AprilTag
-    image_path = 'tags5.jpg'
+    # Load the image
+    image_path = 'tags4.jpg'  # Replace with your image path
     image = cv2.imread(image_path)
 
     if image is None:
         print("Error: Could not read the image.")
         return
 
-    original_image = image.copy()
-
-    # Convert to grayscale
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-    # Apply Gaussian Blur
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-
-    # Edge detection using Canny
-    edged = cv2.Canny(blur, 50, 150)
-
-    # Find contours
-    contours, hierarchy = cv2.findContours(edged, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-    # List to hold potential AprilTag bounding boxes
-    potential_tags = []
-
-    for cnt in contours:
-        # Approximate the contour
-        epsilon = 0.02 * cv2.arcLength(cnt, True)
-        approx = cv2.approxPolyDP(cnt, epsilon, True)
-
-        # Check if the approximated contour has 4 points
-        if len(approx) == 4:
-            # Compute the area of the contour
-            area = cv2.contourArea(approx)
-            if area > 1000:  # Filter out small areas; adjust threshold as needed
-                # Check if the contour is convex
-                if cv2.isContourConvex(approx):
-                    # Add to potential tags
-                    potential_tags.append(approx)
-
-    if not potential_tags:
-        print("No potential AprilTags found.")
-        return
-
     # Initialize SAM
-    sam_checkpoint = "sam_vit_h_4b8939.pth"
+    sam_checkpoint = "sam_vit_h_4b8939.pth"  # Path to the SAM model checkpoint
     model_type = "vit_h"
 
     # Load the model
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
-    predictor = SamPredictor(sam)
+    mask_generator = SamAutomaticMaskGenerator(
+        model=sam,
+        points_per_side=64,
+        pred_iou_thresh=0.86,
+        stability_score_thresh=0.92,
+        min_mask_region_area=100  # Adjust based on the expected size of the tag
+    )
 
-    # Set the image for the predictor
-    predictor.set_image(image)
+    # Generate masks
+    masks = mask_generator.generate(image)
 
-    # Loop through potential tags and process them
-    for idx, tag in enumerate(potential_tags):
-        # Get bounding box for the approximated quadrilateral
-        x, y, w, h = cv2.boundingRect(tag)
-        input_box = np.array([x, y, x + w, y + h])
+    # Visualize all masks
+    visualize_masks(image, masks)
 
-        # Provide the bounding box to SAM
-        masks, _, _ = predictor.predict(
-            point_coords=None,
-            point_labels=None,
-            box=input_box[None, :],
-            multimask_output=False,
-        )
+    # Initialize variables to keep track of the best mask
+    best_mask = None
+    max_confidence = 0
+    best_polygon = None
 
-        # Obtain the segmentation mask
-        mask = masks[0]
+    # Iterate over all generated masks to find the best one
+    for mask_info in masks:
+        mask = mask_info['segmentation']
+        mask_area = mask_info['area']
+        mask_score = mask_info['stability_score']
 
-        # Convert the mask to uint8
+        # Convert the mask to uint8 format
         mask_uint8 = (mask * 255).astype(np.uint8)
 
-        # Apply morphological operations to clean up the mask
-        kernel = np.ones((5, 5), np.uint8)
-        mask_uint8 = cv2.morphologyEx(mask_uint8, cv2.MORPH_CLOSE, kernel)
-
         # Find contours in the mask
-        mask_contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        if not mask_contours:
-            continue
+        for contour in contours:
+            # Approximate the contour to a polygon
+            epsilon = 0.01 * cv2.arcLength(contour, True)
+            approx_polygon = cv2.approxPolyDP(contour, epsilon, True)
 
-        # Assume the largest contour corresponds to the tag
-        contour = max(mask_contours, key=cv2.contourArea)
+            # Check if the polygon has 4 sides (quadrilateral)
+            if len(approx_polygon) == 4:
+                area = cv2.contourArea(approx_polygon)
+                x, y, w, h = cv2.boundingRect(approx_polygon)
+                aspect_ratio = float(w) / h
 
-        # Approximate the contour to a polygon
-        epsilon = 0.01 * cv2.arcLength(contour, True)
-        approx_polygon = cv2.approxPolyDP(contour, epsilon, True)
+                # Additional checks
+                if 0.8 < aspect_ratio < 1.2 and area > 500 and mask_score > max_confidence:
+                    max_confidence = mask_score
+                    best_mask = mask
+                    best_polygon = approx_polygon
 
-        # Check if the polygon has 4 sides (quadrilateral)
-        if len(approx_polygon) == 4:
-            corners = approx_polygon.reshape(4, 2)
-        else:
-            continue  # Skip if not a quadrilateral
+    if best_mask is None:
+        print("Error: Could not find a suitable mask.")
+        return
 
-        # Order the corners consistently
-        image_points = order_corners(corners)
+    # Visualize the segmentation mask overlay on the original image
+    plt.figure(figsize=(10, 10))
+    plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    plt.imshow(best_mask, alpha=0.5)
+    plt.title('Best Segmentation Mask Overlay')
+    plt.axis('off')
+    plt.show()
 
-        # Proceed with pose estimation as before...
+    # Order the corners of the detected quadrilateral consistently
+    corners = best_polygon.reshape(4, 2)
+    image_points = order_corners(corners)
 
-        # Define the real-world coordinates of the tag corners relative to the center
-        tag_size = 0.1  # For example, 0.1 meters
-        half_size = tag_size / 2.0
+    # Display the image with the detected corners marked
+    for point in image_points:
+        cv2.circle(image, tuple(point.astype(int)), 5, (0, 0, 255), -1)
 
-        object_points = np.array([
-            [-half_size, -half_size, 0],
-            [ half_size, -half_size, 0],
-            [ half_size,  half_size, 0],
-            [-half_size,  half_size, 0]
-        ], dtype=np.float32)
+    cv2.imshow('Detected Corners', image)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
-        # Prepare camera parameters
-        # Replace these with your actual camera calibration parameters
-        fx_cam, fy_cam = 800, 800  # Focal lengths
-        cx, cy = image.shape[1] / 2, image.shape[0] / 2  # Principal point
+    # Define the real-world coordinates of the tag corners relative to the center
+    tag_size = 0.1  # Specify the actual size of your AprilTag in meters
+    half_size = tag_size / 2.0
 
-        camera_matrix = np.array([
-            [fx_cam,  0, cx],
-            [ 0, fy_cam, cy],
-            [ 0,  0,  1]
-        ], dtype=np.float32)
+    object_points = np.array([
+        [-half_size, -half_size, 0],
+        [ half_size, -half_size, 0],
+        [ half_size,  half_size, 0],
+        [-half_size,  half_size, 0]
+    ], dtype=np.float32)
 
-        dist_coeffs = np.zeros((4, 1))  # Assuming no lens distortion
+    # Prepare camera parameters (replace with your actual calibration data)
+    fx_cam, fy_cam = 800, 800  # Focal lengths in pixels
+    cx, cy = image.shape[1] / 2, image.shape[0] / 2  # Principal point coordinates
 
-        # Solve PnP
-        success, rotation_vector, translation_vector = cv2.solvePnP(
-            object_points,
-            image_points.astype(np.float32),
-            camera_matrix,
-            dist_coeffs,
-            flags=cv2.SOLVEPNP_ITERATIVE
-        )
+    camera_matrix = np.array([
+        [fx_cam,    0,    cx],
+        [   0,   fy_cam, cy],
+        [   0,      0,    1]
+    ], dtype=np.float32)
 
-        if not success:
-            print("Error: Could not solve PnP problem for tag index {}.".format(idx))
-            continue
+    dist_coeffs = np.zeros((4, 1))  # Assuming no lens distortion
 
-        # Convert rotation vector to rotation matrix
-        rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
+    # Solve the Perspective-n-Point problem to find the pose
+    success, rotation_vector, translation_vector = cv2.solvePnP(
+        object_points,
+        image_points.astype(np.float32),
+        camera_matrix,
+        dist_coeffs,
+        flags=cv2.SOLVEPNP_ITERATIVE
+    )
 
-        # Output the 6D pose
-        print("Tag Index: {}".format(idx))
-        print("Rotation Matrix:")
-        print(rotation_matrix)
-        print("\nTranslation Vector:")
-        print(translation_vector)
+    if not success:
+        print("Error: Could not solve PnP problem.")
+        return
 
-        # Visualize the segmentation mask and pose
-        plt.figure(figsize=(10, 10))
-        plt.imshow(image[..., ::-1])
-        plt.imshow(mask, alpha=0.5)
-        plt.title('Segmentation Mask Overlay for Tag Index {}'.format(idx))
-        plt.axis('off')
-        plt.show()
+    # Convert rotation vector to rotation matrix
+    rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
 
-        # Draw the coordinate axes on the image
-        axis_length = tag_size * 0.5
-        axis_3D_points = np.float32([
-            [0, 0, 0],                   # Origin at center of tag
-            [axis_length, 0, 0],         # X-axis
-            [0, axis_length, 0],         # Y-axis
-            [0, 0, -axis_length],        # Z-axis (negative because OpenCV coordinate system)
-        ])
+    # Output the rotation matrix and translation vector
+    print("Rotation Matrix:")
+    print(rotation_matrix)
+    print("\nTranslation Vector:")
+    print(translation_vector)
 
-        # Project 3D points to image plane
-        image_points_axes, _ = cv2.projectPoints(
-            axis_3D_points,
-            rotation_vector,
-            translation_vector,
-            camera_matrix,
-            dist_coeffs
-        )
+    # Visualize the pose by drawing coordinate axes on the image
+    axis_length = tag_size * 0.5  # Length of the coordinate axes
 
-        # Convert points to integer coordinates
-        image_points_axes = image_points_axes.reshape(-1, 2).astype(int)
+    # Define the 3D points for the axes
+    axis_3D_points = np.float32([
+        [0, 0, 0],                   # Origin at the center of the tag
+        [axis_length, 0, 0],         # X-axis endpoint
+        [0, axis_length, 0],         # Y-axis endpoint
+        [0, 0, -axis_length],        # Z-axis endpoint (negative Z in OpenCV)
+    ])
 
-        # Draw the coordinate axes on the image
-        image_pose = original_image.copy()
-        corner = tuple(image_points_axes[0])  # Origin point at center of tag
-        cv2.line(image_pose, corner, tuple(image_points_axes[1]), (0, 0, 255), 3)  # X-axis in red
-        cv2.line(image_pose, corner, tuple(image_points_axes[2]), (0, 255, 0), 3)  # Y-axis in green
-        cv2.line(image_pose, corner, tuple(image_points_axes[3]), (255, 0, 0), 3)  # Z-axis in blue
+    # Project 3D points to the image plane
+    image_points_axes, _ = cv2.projectPoints(
+        axis_3D_points,
+        rotation_vector,
+        translation_vector,
+        camera_matrix,
+        dist_coeffs
+    )
 
-        # Show the image with pose visualization
-        cv2.imshow('Pose Visualization for Tag Index {}'.format(idx), image_pose)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
+    # Convert projected points to integer coordinates
+    image_points_axes = image_points_axes.reshape(-1, 2).astype(int)
+
+    # Draw the coordinate axes on the image
+    image_pose = image.copy()
+    origin = tuple(image_points_axes[0])  # Origin point (center of the tag)
+    cv2.line(image_pose, origin, tuple(image_points_axes[1]), (0, 0, 255), 3)  # X-axis in red
+    cv2.line(image_pose, origin, tuple(image_points_axes[2]), (0, 255, 0), 3)  # Y-axis in green
+    cv2.line(image_pose, origin, tuple(image_points_axes[3]), (255, 0, 0), 3)  # Z-axis in blue
+
+    # Display the image with pose visualization
+    cv2.imshow('Pose Visualization Centered', image_pose)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
