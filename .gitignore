@@ -20,6 +20,9 @@ env/
 *.swp
 *.swo
 
+# Ignore media
+*.mp4
+
 # Ignore folders named dataset or dataset_<any_string>
 backgrounds/
 dataset/
@@ -37,6 +40,7 @@ Segmentation_approach_deeplabv3/backgrounds
 SAM_approach/sam_vit_h_4b8939.pth
 Segmentation_approach_deeplabv3/old_runs
 SAM_approach/GroundingDINO
+
 
 
 # Ignore commonly used IDE directories

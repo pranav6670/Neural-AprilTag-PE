@@ -168,5 +168,5 @@ def detect_tags_with_comparison(image_path, sam_checkpoint="sam_vit_h_4b8939.pth
     cv2.destroyAllWindows()
 
 # Call the function
-image_path = 'tags16.jpg'
+image_path = 'tags4.jpg'
 detect_tags_with_comparison(image_path)
