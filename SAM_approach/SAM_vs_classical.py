@@ -64,7 +64,7 @@ def main():
     global mode, image_display, points, fx, fy, drawing
 
     # Load the image containing the AprilTag
-    image_path = 'tags17.png'
+    image_path = r"C:\Users\prana\AprilTags\CapturedImages\image_000463_Yaw0.0_Pitch30.0_Roll70.0.png"
     image = cv2.imread(image_path)
 
     if image is None:

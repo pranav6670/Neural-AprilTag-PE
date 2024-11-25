@@ -4,7 +4,8 @@ import torch
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 import matplotlib.pyplot as plt
 
-def detect_tags_with_black_borders(image_path, sam_checkpoint="sam_vit_h_4b8939.pth", model_type="vit_h"):
+
+def detect_inner_tag_with_pose(image_path, sam_checkpoint="sam_vit_h_4b8939.pth", model_type="vit_h"):
     # Load the image
     image = cv2.imread(image_path)
     if image is None:
@@ -14,6 +15,8 @@ def detect_tags_with_black_borders(image_path, sam_checkpoint="sam_vit_h_4b8939.
     # Initialize SAM
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
     mask_generator = SamAutomaticMaskGenerator(sam)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    sam.to(device)
 
     # Generate masks automatically
     masks = mask_generator.generate(image)
@@ -27,91 +30,72 @@ def detect_tags_with_black_borders(image_path, sam_checkpoint="sam_vit_h_4b8939.
     plt.axis('off')
     plt.show()
 
-    # Filter masks to find ones with black borders
+    # Filter masks to find the inner tag mask based on black and white ratios
     selected_mask = None
-    for mask in masks:
-        # Convert the mask to uint8
+    best_black_ratio = 0  # To select the most suitable mask
+    best_white_ratio = 0
+
+    for idx, mask in enumerate(masks):
         mask_region = (mask['segmentation'] * 255).astype(np.uint8)
-
-        # Apply the mask to the image
         masked_image = cv2.bitwise_and(image, image, mask=mask_region)
-
-        # Convert to grayscale for border analysis
         gray = cv2.cvtColor(masked_image, cv2.COLOR_BGR2GRAY)
 
-        # Find contours of the mask
-        contours, _ = cv2.findContours(mask_region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            continue
+        # Calculate proportions of black and white pixels
+        total_pixels = gray.size
+        black_pixels = np.sum(gray < 50)  # Black threshold
+        white_pixels = np.sum(gray > 200)  # White threshold
+        black_ratio = black_pixels / total_pixels
+        white_ratio = white_pixels / total_pixels
 
-        # Get the largest contour (assume it's the relevant tag)
-        contour = max(contours, key=cv2.contourArea)
+        print(f"Mask {idx}: Black Ratio = {black_ratio:.2f}, White Ratio = {white_ratio:.2f}")
 
-        # Approximate the contour to a polygon
-        epsilon = 0.02 * cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, epsilon, True)
-
-        # Check if the polygon has 4 sides (quadrilateral)
-        if len(approx) != 4:
-            continue
-
-        # Extract the bounding box for border analysis
-        x, y, w, h = cv2.boundingRect(contour)
-        border = gray[y:y+h, x:x+w]
-
-        # Check if the border is predominantly black
-        border_pixels = border.flatten()
-        black_pixel_ratio = np.sum(border_pixels < 50) / len(border_pixels)  # Adjust threshold as needed
-
-        if black_pixel_ratio > 0.6:  # Adjust threshold based on your dataset
-            selected_mask = mask
-            break
+        # Select mask with the highest black ratio and a reasonable white ratio
+        if black_ratio > 0.4 and white_ratio > 0.02:  # Adjust thresholds as needed
+            if black_ratio > best_black_ratio or (black_ratio == best_black_ratio and white_ratio > best_white_ratio):
+                selected_mask = mask
+                best_black_ratio = black_ratio
+                best_white_ratio = white_ratio
 
     if selected_mask is None:
-        print("No suitable tag with a black border was found.")
+        print("No suitable inner tag mask was found.")
         return
 
-    # Visualize the selected mask
+    # Visualize the selected inner mask
     plt.figure(figsize=(10, 10))
     plt.imshow(image[..., ::-1])
     plt.imshow(selected_mask['segmentation'], alpha=0.5, cmap='jet')
-    plt.title('Selected Mask with Black Border')
+    plt.title('Selected Inner Mask')
     plt.axis('off')
     plt.show()
 
-    # Extract the selected mask and refine it
+    # Extract the inner mask and find its corners
     mask = selected_mask['segmentation'].astype(np.uint8) * 255
-
-    # Find contours again for the selected mask
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
     if not contours:
-        print("Error: No contours found in the mask.")
+        print("Error: No contours found for the inner mask.")
         return
 
-    # Assume the largest contour is the tag
     contour = max(contours, key=cv2.contourArea)
-
-    # Approximate the contour to a polygon
     epsilon = 0.02 * cv2.arcLength(contour, True)
     approx_polygon = cv2.approxPolyDP(contour, epsilon, True)
 
-    # Check if the polygon has 4 sides
     if len(approx_polygon) == 4:
         corners = approx_polygon.reshape(4, 2)
-        print("Detected a quadrilateral for the tag.")
+        print("Detected a quadrilateral for the inner tag.")
     else:
-        print("No quadrilateral found in the segmentation.")
+        print("No quadrilateral detected.")
         return
 
-    # Visualize the detected corners
+    # Visualize detected corners
     for point in corners:
         cv2.circle(image, tuple(point.astype(int)), 5, (0, 0, 255), -1)
-    cv2.imshow('Detected Corners', image)
+    cv2.imshow('Detected Corners on Inner Mask', image)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
     # Pose Estimation
-    tag_size = 0.1  # Example: 0.1 meters
+    tag_size = 0.1  # Example: Tag size in meters
     half_size = tag_size / 2.0
     object_points = np.array([
         [-half_size, -half_size, 0],
@@ -120,7 +104,7 @@ def detect_tags_with_black_borders(image_path, sam_checkpoint="sam_vit_h_4b8939.
         [-half_size,  half_size, 0]
     ], dtype=np.float32)
 
-    fx_cam, fy_cam = 800, 800  # Focal lengths
+    fx_cam, fy_cam = 800, 800  # Focal lengths (example values)
     cx, cy = image.shape[1] / 2, image.shape[0] / 2  # Principal point
 
     camera_matrix = np.array([
@@ -181,6 +165,7 @@ def detect_tags_with_black_borders(image_path, sam_checkpoint="sam_vit_h_4b8939.
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
+
 # Call the function
-image_path = 'tags4.jpg'
-detect_tags_with_black_borders(image_path)
+image_path = r"C:\Users\prana\AprilTags\CapturedImages\image_000463_Yaw0.0_Pitch30.0_Roll70.0.png"
+detect_inner_tag_with_pose(image_path)

@@ -5,6 +5,7 @@ from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 import matplotlib.pyplot as plt
 from pyapriltags import Detector
 
+
 # Function to order the corners consistently
 def order_corners(pts):
     rect = np.zeros((4, 2), dtype="float32")
@@ -15,6 +16,67 @@ def order_corners(pts):
     rect[1] = pts[np.argmin(diff)]    # Top-right
     rect[3] = pts[np.argmax(diff)]    # Bottom-left
     return rect
+
+
+# Function to draw a 3D cube on the detected tag
+def draw_cube_on_tags(image, rotation_vector, t_vector, camera_matrix, dist_coeffs, tag_size, color=(0, 255, 255)):
+    half_size = tag_size / 2
+    cube_points = np.float32([
+        [half_size, half_size, 0],
+        [half_size, -half_size, 0],
+        [-half_size, -half_size, 0],
+        [-half_size, half_size, 0],
+        [half_size, half_size, -tag_size],
+        [half_size, -half_size, -tag_size],
+        [-half_size, -half_size, -tag_size],
+        [-half_size, half_size, -tag_size]
+    ])
+    # Project 3D points to 2D
+    image_points, _ = cv2.projectPoints(cube_points, rotation_vector, t_vector, camera_matrix, dist_coeffs)
+    image_points = image_points.reshape(-1, 2).astype(int)
+
+    # Draw cube edges
+    for i, j in zip([0, 1, 2, 3], [1, 2, 3, 0]):
+        cv2.line(image, tuple(image_points[i]), tuple(image_points[j]), color, 2)
+        cv2.line(image, tuple(image_points[i + 4]), tuple(image_points[j + 4]), color, 2)
+        cv2.line(image, tuple(image_points[i]), tuple(image_points[i + 4]), color, 2)
+
+
+# Function to visualize pose vectors
+def draw_pose_vectors(image, rotation_vector, t_vector, camera_matrix, dist_coeffs, tag_size):
+    axis_3D_points = np.float32([
+        [0, 0, 0],  # Origin
+        [tag_size, 0, 0],  # X-axis
+        [0, tag_size, 0],  # Y-axis
+        [0, 0, -tag_size]  # Z-axis
+    ])
+    image_points, _ = cv2.projectPoints(axis_3D_points, rotation_vector, t_vector, camera_matrix, dist_coeffs)
+    image_points = image_points.reshape(-1, 2).astype(int)
+
+    origin = tuple(image_points[0])
+    # Draw X-axis (red)
+    cv2.line(image, origin, tuple(image_points[1]), (0, 0, 255), 2)
+    # Draw Y-axis (green)
+    cv2.line(image, origin, tuple(image_points[2]), (0, 255, 0), 2)
+    # Draw Z-axis (blue)
+    cv2.line(image, origin, tuple(image_points[3]), (255, 0, 0), 2)
+
+
+# Function to convert rotation vectors to Euler angles
+def rotation_vector_to_euler(rotation_vector):
+    rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
+    sy = np.sqrt(rotation_matrix[0, 0] ** 2 + rotation_matrix[1, 0] ** 2)
+    singular = sy < 1e-6
+    if not singular:
+        x = np.arctan2(rotation_matrix[2, 1], rotation_matrix[2, 2])
+        y = np.arctan2(-rotation_matrix[2, 0], sy)
+        z = np.arctan2(rotation_matrix[1, 0], rotation_matrix[0, 0])
+    else:
+        x = np.arctan2(-rotation_matrix[1, 2], rotation_matrix[1, 1])
+        y = np.arctan2(-rotation_matrix[2, 0], sy)
+        z = 0
+    return np.degrees([x, y, z])
+
 
 def detect_tags_with_comparison(image_path, sam_checkpoint="sam_vit_h_4b8939.pth", model_type="vit_h"):
     # Load the image
@@ -31,15 +93,6 @@ def detect_tags_with_comparison(image_path, sam_checkpoint="sam_vit_h_4b8939.pth
 
     # Generate masks automatically
     masks = mask_generator.generate(image)
-
-    # Visualize all generated masks
-    plt.figure(figsize=(10, 10))
-    plt.imshow(image[..., ::-1])
-    for mask in masks:
-        plt.contour(mask['segmentation'], colors=['blue'], levels=[0.5])
-    plt.title('All Generated Masks (SAM)')
-    plt.axis('off')
-    plt.show()
 
     # Initialize camera parameters
     tag_size = 0.1  # Example tag size in meters
@@ -73,45 +126,16 @@ def detect_tags_with_comparison(image_path, sam_checkpoint="sam_vit_h_4b8939.pth
         r_matrix_apriltag = result.pose_R
         rotation_vector_apriltag, _ = cv2.Rodrigues(r_matrix_apriltag)
 
-        # Print PyAprilTags pose
-        print(f"Tag ID: {tag_id} (PyAprilTags)")
-        print(f"Translation: {t_vector_apriltag}")
-        print(f"Rotation: {rotation_vector_apriltag.flatten()}")
-
-        # Save PyAprilTags poses for comparison
         apriltag_poses[tag_id] = {
             "translation": t_vector_apriltag,
             "rotation": rotation_vector_apriltag.flatten()
         }
 
-        # Overlay tag ID
-        tag_corners = result.corners
-        ordered_corners = order_corners(tag_corners)
-        top_right = tuple(map(int, ordered_corners[1]))
-        cv2.putText(
-            image_pose_apriltag,
-            f"ID: {tag_id}",
-            (top_right[0] - 30, top_right[1] - 10),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2
-        )
-
-        # Draw pose axes
-        axis_3D_points = np.float32([
-            [0, 0, 0], [tag_size * 0.5, 0, 0],
-            [0, tag_size * 0.5, 0], [0, 0, -tag_size * 0.5]
-        ])
-        image_points_axes_apriltag, _ = cv2.projectPoints(
-            axis_3D_points, rotation_vector_apriltag, t_vector_apriltag,
-            camera_matrix, dist_coeffs
-        )
-        image_points_axes_apriltag = image_points_axes_apriltag.reshape(-1, 2).astype(int)
-        corner = tuple(image_points_axes_apriltag[0])
-        cv2.line(image_pose_apriltag, corner, tuple(image_points_axes_apriltag[1]), (0, 0, 255), 3)
-        cv2.line(image_pose_apriltag, corner, tuple(image_points_axes_apriltag[2]), (0, 255, 0), 3)
-        cv2.line(image_pose_apriltag, corner, tuple(image_points_axes_apriltag[3]), (255, 0, 0), 3)
+        draw_cube_on_tags(image_pose_apriltag, rotation_vector_apriltag, t_vector_apriltag, camera_matrix, dist_coeffs, tag_size, color=(0, 255, 255))
+        draw_pose_vectors(image_pose_apriltag, rotation_vector_apriltag, t_vector_apriltag, camera_matrix, dist_coeffs, tag_size)
 
     # ================================
-    # SAM Pose Estimation for PyAprilTags
+    # SAM Pose Estimation
     # ================================
     image_pose_sam = image.copy()
     for result in results:
@@ -128,74 +152,65 @@ def detect_tags_with_comparison(image_path, sam_checkpoint="sam_vit_h_4b8939.pth
         )
 
         if success:
-            # Print SAM pose
-            print(f"Tag ID: {tag_id} (SAM)")
-            print(f"Translation: {translation_vector_sam.flatten()}")
-            print(f"Rotation: {rotation_vector_sam.flatten()}")
-
-            # Save SAM poses for comparison
             sam_poses[tag_id] = {
                 "translation": translation_vector_sam.flatten(),
                 "rotation": rotation_vector_sam.flatten()
             }
 
-            # Overlay tag ID
-            top_right = tuple(map(int, ordered_corners[1]))
-            cv2.putText(
-                image_pose_sam,
-                f"ID: {tag_id}",
-                (top_right[0] - 30, top_right[1] - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2
-            )
-
-            # Draw pose axes
-            axis_3D_points = np.float32([
-                [0, 0, 0], [tag_size * 0.5, 0, 0],
-                [0, tag_size * 0.5, 0], [0, 0, -tag_size * 0.5]
-            ])
-            image_points_axes_sam, _ = cv2.projectPoints(
-                axis_3D_points, rotation_vector_sam, translation_vector_sam,
-                camera_matrix, dist_coeffs
-            )
-            image_points_axes_sam = image_points_axes_sam.reshape(-1, 2).astype(int)
-            corner = tuple(image_points_axes_sam[0])
-            cv2.line(image_pose_sam, corner, tuple(image_points_axes_sam[1]), (0, 0, 255), 3)
-            cv2.line(image_pose_sam, corner, tuple(image_points_axes_sam[2]), (0, 255, 0), 3)
-            cv2.line(image_pose_sam, corner, tuple(image_points_axes_sam[3]), (255, 0, 0), 3)
+            draw_cube_on_tags(image_pose_sam, rotation_vector_sam, translation_vector_sam, camera_matrix, dist_coeffs, tag_size, color=(255, 255, 0))
+            draw_pose_vectors(image_pose_sam, rotation_vector_sam, translation_vector_sam, camera_matrix, dist_coeffs, tag_size)
 
     # ================================
-    # Compare Norms of Differences
+    # Detailed Pose Values and Differences
     # ================================
-    print("\n=== Norms of Differences ===")
     for tag_id in sam_poses:
         if tag_id in apriltag_poses:
-            translation_diff = sam_poses[tag_id]["translation"] - apriltag_poses[tag_id]["translation"]
-            rotation_diff = sam_poses[tag_id]["rotation"] - apriltag_poses[tag_id]["rotation"]
+            # Get translation vectors
+            translation_sam = sam_poses[tag_id]["translation"]
+            translation_apriltag = apriltag_poses[tag_id]["translation"]
+            translation_diff = translation_sam - translation_apriltag
             translation_norm = np.linalg.norm(translation_diff)
-            rotation_norm = np.linalg.norm(rotation_diff)
-            print(f"Tag ID: {tag_id}")
+
+            # Get rotation vectors and convert to Euler angles
+            rotation_sam = sam_poses[tag_id]["rotation"]
+            rotation_apriltag = apriltag_poses[tag_id]["rotation"]
+            rotation_diff_vector = rotation_sam - rotation_apriltag
+            rotation_diff_euler = rotation_vector_to_euler(rotation_sam) - rotation_vector_to_euler(rotation_apriltag)
+            rotation_diff_norm = np.linalg.norm(rotation_diff_euler)
+
+            # Print detailed information
+            print(f"\nTag ID: {tag_id}")
+            print(f"--- SAM Pose ---")
+            print(f"Translation: {translation_sam}")
+            print(f"Rotation (Vector): {rotation_sam}")
+            print(f"Rotation (Euler): {rotation_vector_to_euler(rotation_sam)}")
+
+            print(f"--- PyAprilTags Pose ---")
+            print(f"Translation: {translation_apriltag}")
+            print(f"Rotation (Vector): {rotation_apriltag}")
+            print(f"Rotation (Euler): {rotation_vector_to_euler(rotation_apriltag)}")
+
+            print(f"--- Differences ---")
+            print(f"Translation Difference: {translation_diff}")
             print(f"Translation Difference Norm: {translation_norm}")
-            print(f"Rotation Difference Norm: {rotation_norm}")
+            print(f"Rotation Difference (Vector): {rotation_diff_vector}")
+            print(f"Rotation Difference (Euler): {rotation_diff_euler}")
+            print(f"Euler Rotation Difference Norm: {rotation_diff_norm}")
 
-    # ================================
-    # Comparison of Both Methods
-    # ================================
-    combined_image = np.hstack((image_pose_sam, image_pose_apriltag))
+            # ================================
+            # Visualization Comparison
+            # ================================
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        cv2.putText(image_pose_sam, "SAM Pose Estimation", (30, 50), font, 1, (255, 255, 0), 2)
+        cv2.putText(image_pose_apriltag, "PyAprilTags Pose Estimation", (30, 50), font, 1, (0, 255, 255), 2)
+        combined_image = np.hstack((image_pose_sam, image_pose_apriltag))
 
-    # Add labels
-    label_color = (0, 0, 0)
-    font_scale = 1
-    thickness = 2
-    text_sam = "SAM Pose Estimation"
-    text_pyapriltags = "PyAprilTags Pose Estimation"
-    combined_image = cv2.putText(combined_image, text_sam, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, font_scale, label_color, thickness)
-    combined_image = cv2.putText(combined_image, text_pyapriltags, (combined_image.shape[1] // 2 + 50, 50), cv2.FONT_HERSHEY_SIMPLEX, font_scale, label_color, thickness)
-
-    cv2.imshow('Pose Estimation Comparison', combined_image)
-    cv2.imwrite('out.jpg', combined_image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+        # Show and save comparison image
+        cv2.imshow('Pose Estimation Comparison', combined_image)
+        cv2.imwrite('pose_estimation_comparison.jpg', combined_image)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
 
 # Call the function
-image_path = 'tags4.jpg'
+image_path = r"C:\Users\prana\AprilTags\CapturedImages\image_000500_Yaw20.0_Pitch-10.0_Roll90.0.png"
 detect_tags_with_comparison(image_path)

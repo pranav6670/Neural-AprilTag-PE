@@ -13,6 +13,8 @@ def detect_tags_with_black_borders(image_path, sam_checkpoint="sam_vit_h_4b8939.
 
     # Initialize SAM
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    sam.to(device)
     mask_generator = SamAutomaticMaskGenerator(sam)
 
     # Generate masks automatically
@@ -121,5 +123,5 @@ def detect_tags_with_black_borders(image_path, sam_checkpoint="sam_vit_h_4b8939.
     return corners
 
 
-image_path = 'tags4.jpg'
+image_path = r"C:\Users\prana\AprilTags\CapturedImages\image_000463_Yaw0.0_Pitch30.0_Roll70.0.png"
 detect_tags_with_black_borders(image_path)
