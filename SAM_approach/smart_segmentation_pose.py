@@ -167,5 +167,5 @@ def detect_inner_tag_with_pose(image_path, sam_checkpoint="sam_vit_h_4b8939.pth"
 
 
 # Call the function
-image_path = r"C:\Users\prana\AprilTags\CapturedImages\image_000463_Yaw0.0_Pitch30.0_Roll70.0.png"
+image_path = r"C:\Users\prana\AprilTags\CapturedImages\image_000035_Yaw-50.0_Pitch15.0_Roll-90.0.png"
 detect_inner_tag_with_pose(image_path)
