@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import torch
 import pickle
+from tqdm import tqdm
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 from pyapriltags import Detector
 from scipy.spatial.transform import Rotation as R
@@ -19,6 +20,49 @@ def order_corners(pts):
     rect[1] = pts[np.argmin(diff)]  # Top-right
     rect[3] = pts[np.argmax(diff)]  # Bottom-left
     return rect
+
+
+# Function to draw a 3D cube on the detected tag
+def draw_cube_on_tags(image, rotation_vector, t_vector, camera_matrix, dist_coeffs, tag_size, color=(0, 255, 255)):
+    half_size = tag_size / 2
+    cube_points = np.float32([
+        [half_size, half_size, 0],
+        [half_size, -half_size, 0],
+        [-half_size, -half_size, 0],
+        [-half_size, half_size, 0],
+        [half_size, half_size, -tag_size],
+        [half_size, -half_size, -tag_size],
+        [-half_size, -half_size, -tag_size],
+        [-half_size, half_size, -tag_size]
+    ])
+    image_points, _ = cv2.projectPoints(cube_points, rotation_vector, t_vector, camera_matrix, dist_coeffs)
+    image_points = image_points.reshape(-1, 2).astype(int)
+
+    # Draw cube edges
+    for i, j in zip([0, 1, 2, 3], [1, 2, 3, 0]):
+        cv2.line(image, tuple(image_points[i]), tuple(image_points[j]), color, 2)
+        cv2.line(image, tuple(image_points[i + 4]), tuple(image_points[j + 4]), color, 2)
+        cv2.line(image, tuple(image_points[i]), tuple(image_points[i + 4]), color, 2)
+
+
+# Function to visualize pose vectors
+def draw_pose_vectors(image, rotation_vector, t_vector, camera_matrix, dist_coeffs, tag_size):
+    axis_3D_points = np.float32([
+        [0, 0, 0],  # Origin
+        [tag_size, 0, 0],  # X-axis
+        [0, tag_size, 0],  # Y-axis
+        [0, 0, -tag_size]  # Z-axis
+    ])
+    image_points, _ = cv2.projectPoints(axis_3D_points, rotation_vector, t_vector, camera_matrix, dist_coeffs)
+    image_points = image_points.reshape(-1, 2).astype(int)
+
+    origin = tuple(image_points[0])
+    # Draw X-axis (red)
+    cv2.line(image, origin, tuple(image_points[1]), (0, 0, 255), 2)
+    # Draw Y-axis (green)
+    cv2.line(image, origin, tuple(image_points[2]), (0, 255, 0), 2)
+    # Draw Z-axis (blue)
+    cv2.line(image, origin, tuple(image_points[3]), (255, 0, 0), 2)
 
 
 # Function to convert rotation vector to Euler angles
@@ -57,7 +101,7 @@ def calculate_pose_error(t_sam, t_apriltag, r_sam, r_apriltag):
     return translation_error, rotation_error
 
 
-# Main function to process a single image
+# Function to process a single image
 def process_image(image_path, sam, mask_generator, detector, camera_matrix, dist_coeffs, tag_size):
     image = cv2.imread(image_path)
     if image is None:
@@ -127,7 +171,7 @@ def process_image(image_path, sam, mask_generator, detector, camera_matrix, dist
     }
 
 
-# Main function to process all images in a directory
+# Function to process all images in a directory
 def process_directory(directory_path, output_pickle_path, sam_checkpoint="sam_vit_h_4b8939.pth", model_type="vit_h"):
     # Initialize SAM
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
@@ -147,10 +191,9 @@ def process_directory(directory_path, output_pickle_path, sam_checkpoint="sam_vi
 
     # Process each image
     results = []
-    for filename in os.listdir(directory_path):
+    for filename in tqdm(os.listdir(directory_path), desc="Processing images", unit="image"):
         if filename.lower().endswith((".png", ".jpg", ".jpeg")):
             image_path = os.path.join(directory_path, filename)
-            print(f"Processing {image_path}...")
             result = process_image(image_path, sam, mask_generator, detector, camera_matrix, dist_coeffs, tag_size)
             if result:
                 results.append(result)

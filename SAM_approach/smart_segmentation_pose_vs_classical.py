@@ -1,9 +1,6 @@
-import os
 import cv2
 import numpy as np
 import torch
-import pickle
-from tqdm import tqdm
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 from pyapriltags import Detector
 from scipy.spatial.transform import Rotation as R
@@ -88,161 +85,149 @@ def rotation_vector_to_euler(rotation_vector):
     return np.degrees([yaw, pitch, roll])  # Convert to degrees
 
 
-# Function to calculate pose error
-def calculate_pose_error(t_sam, t_apriltag, r_sam, r_apriltag):
-    """Calculate translation and rotation differences (norms)."""
-    translation_error = np.linalg.norm(t_sam - t_apriltag)
+# Function to visualize the tag segmentation with mask
+def visualize_tag_segmentation_with_mask(image, mask, corners):
+    """
+    Visualize the segmentation of the detected tag, its corners, and the mask overlayed on the tag.
+    """
+    # Create a copy of the original image to overlay the mask
+    masked_image = image.copy()
 
-    rotation1 = R.from_rotvec(r_sam.flatten())
-    rotation2 = R.from_rotvec(r_apriltag.flatten())
-    rotation_diff = rotation1.inv() * rotation2
-    rotation_error = rotation_diff.magnitude()
+    # Apply the mask with transparency
+    alpha = 0.6  # Transparency factor
+    mask_overlay = np.zeros_like(image, dtype=np.uint8)
+    mask_overlay[mask == 1] = (0, 255, 0)  # Green mask
 
-    return translation_error, rotation_error
+    # Blend the mask overlay with the original image
+    cv2.addWeighted(mask_overlay, alpha, masked_image, 1 - alpha, 0, masked_image)
+
+    # Draw the corners on the masked image
+    for corner in corners:
+        cv2.circle(masked_image, tuple(corner.astype(int)), 5, (0, 0, 255), -1)  # Mark corners in red
+
+    # Visualize the result
+    plt.figure(figsize=(8, 8))
+    plt.imshow(cv2.cvtColor(masked_image, cv2.COLOR_BGR2RGB))
+    plt.title("Tag Segmentation with Mask and Corners")
+    plt.axis("off")
+    plt.show()
 
 
-# Function to process a single image
-def process_image(image_path, sam, mask_generator, detector, camera_matrix, dist_coeffs, tag_size):
+# Function to visualize the pose comparison
+def visualize_pose_comparison(image_pose_sam, image_pose_apriltag):
+    """
+    Combine and display the SAM and PyAprilTags pose estimations side by side.
+    """
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(image_pose_sam, "SAM Pose Estimation", (30, 50), font, 1, (255, 255, 0), 2)
+    cv2.putText(image_pose_apriltag, "PyAprilTags Pose Estimation", (30, 50), font, 1, (0, 255, 255), 2)
+    combined_image = np.hstack((image_pose_sam, image_pose_apriltag))
+
+    # Display and save the combined result
+    cv2.imshow('Pose Estimation Comparison', combined_image)
+    cv2.imwrite('pose_estimation_comparison.jpg', combined_image)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+
+# Main function
+def detect_tags_with_comparison(image_path, sam_checkpoint="sam_vit_h_4b8939.pth", model_type="vit_h"):
+    # Load the image
     image = cv2.imread(image_path)
     if image is None:
-        print(f"Error: Could not read the image {image_path}.")
-        return None
+        print("Error: Could not read the image.")
+        return
 
-    # Generate masks
-    masks = mask_generator.generate(image)
+    # Initialize camera parameters
+    tag_size = 0.1  # Example tag size in meters
+    fx_cam, fy_cam = 800, 800
+    cx, cy = image.shape[1] / 2, image.shape[0] / 2
+    camera_matrix = np.array([[fx_cam, 0, cx], [0, fy_cam, cy], [0, 0, 1]], dtype=np.float32)
+    dist_coeffs = np.zeros((4, 1))
 
-    # Initialize PyAprilTags detector
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    results = detector.detect(gray, estimate_tag_pose=True, camera_params=(camera_matrix[0, 0], camera_matrix[1, 1], camera_matrix[0, 2], camera_matrix[1, 2]), tag_size=tag_size)
-
-    if not results:
-        print(f"No tags detected in {image_path}.")
-        return None
-
-    # Process first detected tag (assuming one tag per image)
-    result = results[0]
-
-    # PyAprilTags pose
-    t_vector_apriltag = result.pose_t.flatten()
-    r_matrix_apriltag = result.pose_R
-    rotation_vector_apriltag, _ = cv2.Rodrigues(r_matrix_apriltag)
-
-    # Refine SAM corner detection using PyAprilTags corners
-    tag_corners = result.corners
-    ordered_corners = order_corners(tag_corners)
-
-    # SAM Pose Estimation
-    success, rotation_vector_sam, t_vector_sam = cv2.solvePnP(
-        np.array([
-            [-tag_size / 2, -tag_size / 2, 0],
-            [tag_size / 2, -tag_size / 2, 0],
-            [tag_size / 2, tag_size / 2, 0],
-            [-tag_size / 2, tag_size / 2, 0]
-        ], dtype=np.float32),
-        ordered_corners.astype(np.float32),
-        camera_matrix,
-        dist_coeffs,
-        flags=cv2.SOLVEPNP_ITERATIVE
-    )
-
-    if not success:
-        print(f"SAM Pose Estimation failed for {image_path}.")
-        return None
-
-    # Calculate pose error
-    translation_error, rotation_error = calculate_pose_error(
-        t_vector_sam.flatten(), t_vector_apriltag, rotation_vector_sam.flatten(), rotation_vector_apriltag
-    )
-
-    # Compute Euler angles
-    euler_sam = rotation_vector_to_euler(rotation_vector_sam)
-    euler_apriltag = rotation_vector_to_euler(rotation_vector_apriltag)
-
-    return {
-        "image_path": image_path,
-        "t_sam": t_vector_sam.flatten(),
-        "t_apriltag": t_vector_apriltag,
-        "r_sam": rotation_vector_sam.flatten(),
-        "r_apriltag": rotation_vector_apriltag.flatten(),
-        "euler_sam": euler_sam,
-        "euler_apriltag": euler_apriltag,
-        "translation_error": translation_error,
-        "rotation_error": rotation_error
-    }
-
-
-# Function to process all images in a directory
-def process_directory(directory_path, output_pickle_path, sam_checkpoint="sam_vit_h_4b8939.pth", model_type="vit_h"):
     # Initialize SAM
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     sam.to(device)
     mask_generator = SamAutomaticMaskGenerator(sam)
 
+    # Generate masks
+    masks = mask_generator.generate(image)
+
     # Initialize PyAprilTags detector
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     detector = Detector(families='tag36h11')
+    camera_params = (fx_cam, fy_cam, cx, cy)
+    results = detector.detect(gray, estimate_tag_pose=True, camera_params=camera_params, tag_size=tag_size)
 
-    # Camera parameters
-    tag_size = 0.1  # Example tag size in meters
-    fx_cam, fy_cam = 800, 800
-    cx, cy = 960, 540  # Assuming a 1920x1080 image resolution
-    camera_matrix = np.array([[fx_cam, 0, cx], [0, fy_cam, cy], [0, 0, 1]], dtype=np.float32)
-    dist_coeffs = np.zeros((4, 1))
+    # Loop over PyAprilTags results
+    for result in results:
+        tag_id = result.tag_id
 
-    # Process each image
-    results = []
-    for filename in tqdm(os.listdir(directory_path), desc="Processing images", unit="image"):
-        if filename.lower().endswith((".png", ".jpg", ".jpeg")):
-            image_path = os.path.join(directory_path, filename)
-            result = process_image(image_path, sam, mask_generator, detector, camera_matrix, dist_coeffs, tag_size)
-            if result:
-                results.append(result)
+        # PyAprilTags pose
+        t_vector_apriltag = result.pose_t.flatten()
+        r_matrix_apriltag = result.pose_R
+        rotation_vector_apriltag, _ = cv2.Rodrigues(r_matrix_apriltag)
 
-    # Save results to a pickle file
-    with open(output_pickle_path, "wb") as f:
-        pickle.dump(results, f)
+        # Refine SAM corner detection using PyAprilTags corners
+        tag_corners = result.corners
+        ordered_corners = order_corners(tag_corners)
 
-    print(f"Results saved to {output_pickle_path}.")
+        # Find and visualize the best mask
+        best_mask = None
+        for mask in masks:
+            if best_mask is None or np.sum(mask["segmentation"]) > np.sum(best_mask["segmentation"]):
+                best_mask = mask
 
-    return results
+        if best_mask is not None:
+            visualize_tag_segmentation_with_mask(image, best_mask["segmentation"], ordered_corners)
+
+        # SAM Pose Estimation
+        success, rotation_vector_sam, t_vector_sam = cv2.solvePnP(
+            np.array([
+                [-tag_size / 2, -tag_size / 2, 0],
+                [tag_size / 2, -tag_size / 2, 0],
+                [tag_size / 2, tag_size / 2, 0],
+                [-tag_size / 2, tag_size / 2, 0]
+            ], dtype=np.float32),
+            ordered_corners.astype(np.float32),
+            camera_matrix,
+            dist_coeffs,
+            flags=cv2.SOLVEPNP_ITERATIVE
+        )
+
+        if success:
+            # Print pose information
+            euler_sam = rotation_vector_to_euler(rotation_vector_sam)
+            euler_apriltag = rotation_vector_to_euler(rotation_vector_apriltag)
+
+            print(f"\nTag ID: {tag_id}")
+            print("--- PyAprilTags Pose ---")
+            print(f"Translation: {t_vector_apriltag}")
+            print(f"Euler Angles (Yaw, Pitch, Roll): {euler_apriltag}")
+
+            print("\n--- SAM Pose ---")
+            print(f"Translation: {t_vector_sam.flatten()}")
+            print(f"Euler Angles (Yaw, Pitch, Roll): {euler_sam}")
+
+            # Compare visualizations
+            image_pose_sam = image.copy()
+            image_pose_apriltag = image.copy()
+
+            draw_cube_on_tags(image_pose_sam, rotation_vector_sam, t_vector_sam, camera_matrix, dist_coeffs, tag_size, color=(255,255,0))
+            draw_pose_vectors(image_pose_sam, rotation_vector_sam, t_vector_sam, camera_matrix, dist_coeffs, tag_size)
+
+            draw_cube_on_tags(image_pose_apriltag, rotation_vector_apriltag, t_vector_apriltag, camera_matrix, dist_coeffs, tag_size, color=(0,255,255))
+            draw_pose_vectors(image_pose_apriltag, rotation_vector_apriltag, t_vector_apriltag, camera_matrix, dist_coeffs, tag_size)
+
+            visualize_pose_comparison(image_pose_sam, image_pose_apriltag)
 
 
-# Function to visualize results
-def visualize_results(results):
-    # Extract data
-    translation_errors = [r["translation_error"] for r in results]
-    rotation_errors = [r["rotation_error"] for r in results]
-    image_names = [os.path.basename(r["image_path"]) for r in results]
+# Path to the input image
+image_path = r"C:\Users\prana\AprilTags\CapturedImages\image_000492_Yaw40.0_Pitch30.0_Roll-15.0.png"
 
-    # Plot translation errors
-    plt.figure(figsize=(12, 6))
-    plt.bar(image_names, translation_errors, color="blue", alpha=0.7, label="Translation Error")
-    plt.xticks(rotation=45, ha="right")
-    plt.ylabel("Translation Error (m)")
-    plt.title("Translation Errors for Images")
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
+# Path to the SAM model checkpoint
+sam_checkpoint_path = "sam_vit_h_4b8939.pth"
 
-    # Plot rotation errors
-    plt.figure(figsize=(12, 6))
-    plt.bar(image_names, rotation_errors, color="red", alpha=0.7, label="Rotation Error")
-    plt.xticks(rotation=45, ha="right")
-    plt.ylabel("Rotation Error (radians)")
-    plt.title("Rotation Errors for Images")
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
-
-
-# Example usage
-if __name__ == "__main__":
-    directory_path = r"C:\Users\prana\AprilTags\CapturedImages"
-    output_pickle_path = r"pose_analysis_results.pkl"
-    sam_checkpoint_path = "sam_vit_h_4b8939.pth"
-
-    # Process directory and save results
-    results = process_directory(directory_path, output_pickle_path, sam_checkpoint=sam_checkpoint_path)
-
-    # Visualize results
-    visualize_results(results)
+# Call the function for pose comparison
+detect_tags_with_comparison(image_path, sam_checkpoint=sam_checkpoint_path, model_type="vit_h")
